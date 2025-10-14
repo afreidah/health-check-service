@@ -10,6 +10,7 @@ A lightweight, production-ready Go service that monitors systemd services via D-
 - **Graceful Shutdown**: Proper cleanup on SIGTERM/SIGINT
 - **Flexible Configuration**: Supports command-line flags, environment variables, and config files
 - **Thread-Safe**: Concurrent-safe status caching
+- **Self-Healing**: Automatic D-Bus reconnection with exponential backoff
 - **Containerized**: Multi-stage Docker build for minimal image size
 - **CI/CD Ready**: GitHub Actions workflow for self-hosted runners
 - **Security Scanned**: Automated Checkov and Trivy security scanning
@@ -121,6 +122,56 @@ interval: 10
 
 ```bash
 ./bin/health-checker --config config.yaml
+```
+
+## D-Bus Reconnection & Self-Healing
+
+The service automatically recovers from D-Bus connection failures without manual intervention. This ensures continuous monitoring even during system bus restarts or transient connection issues.
+
+### How It Works
+
+When a D-Bus connection failure is detected:
+
+1. **Detection**: Connection error triggers reconnection logic
+2. **Cleanup**: Old connection is closed
+3. **Reconnection**: Attempts to establish new connection
+4. **Exponential Backoff**: Wait time increases between attempts
+5. **Recovery**: Once reconnected, monitoring resumes normally
+
+### Backoff Strategy
+
+The reconnection logic uses exponential backoff to avoid overwhelming the system bus:
+
+```
+Attempt 1: Wait 1 second
+Attempt 2: Wait 2 seconds
+Attempt 3: Wait 4 seconds
+Attempt 4: Wait 8 seconds
+Attempt 5: Wait 16 seconds
+Attempt 6+: Wait 30 seconds (max)
+```
+
+### Benefits
+
+- ✅ **Zero Downtime**: HTTP endpoints remain responsive during reconnection
+- ✅ **No Manual Intervention**: Service heals itself automatically
+- ✅ **Observable**: All reconnection attempts are logged
+- ✅ **Respectful**: Exponential backoff prevents system bus overload
+- ✅ **Graceful**: Honors shutdown signals even during reconnection
+
+### Monitoring Reconnections
+
+Watch for reconnection events in logs:
+```bash
+# Connection failure
+D-Bus connection error, attempting reconnection: <error details>
+
+# Reconnection attempts
+D-Bus reconnection failed, retrying in 2s: <error>
+D-Bus reconnection failed, retrying in 4s: <error>
+
+# Successful recovery
+Successfully reconnected to D-Bus
 ```
 
 ## Makefile Targets
@@ -492,6 +543,8 @@ systemctl status dbus
 # For Docker, ensure socket is mounted correctly
 ```
 
+**Note**: If D-Bus restarts while the service is running, the service will automatically reconnect - no manual intervention required.
+
 ### Permission Denied
 ```
 Error checking service: permission denied
@@ -505,6 +558,21 @@ listen tcp :8080: bind: address already in use
 **Solution**: Use a different port:
 ```bash
 make run SERVICE=nginx PORT=8081
+```
+
+### Reconnection Loops
+If you see repeated reconnection attempts in logs:
+```
+D-Bus reconnection failed, retrying in 30s
+```
+**Possible Causes**:
+- D-Bus service is stopped: `systemctl status dbus`
+- Permissions issue preventing connection
+- D-Bus socket not accessible (check mount in Docker)
+
+**Solution**: Check D-Bus status and restart if needed:
+```bash
+sudo systemctl restart dbus
 ```
 
 ## Contributing

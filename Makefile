@@ -69,7 +69,11 @@ run: build
 # Run Go tests
 test:
 	@echo "$(COLOR_CYAN)==> Running Go tests...$(COLOR_RESET)"
-	@$(GOTEST) -v ./...
+	@if command -v gotestsum >/dev/null 2>&1; then \
+		gotestsum --format testname ./...; \
+	else \
+		$(GOTEST) -v ./...; \
+	fi
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Tests passed"
 
 # Format Go code

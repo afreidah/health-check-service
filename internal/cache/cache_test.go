@@ -1,3 +1,23 @@
+// -----------------------------------------------------------------------------
+// Service Status Cache - Tests
+// -----------------------------------------------------------------------------
+//
+// This test suite verifies the thread-safe behavior of the ServiceCache.
+// Since the cache is accessed concurrently by multiple goroutines in
+// production, these tests focus heavily on race conditions and concurrent
+// access patterns.
+//
+// Test Coverage:
+//   - Constructor initialization and default values
+//   - Basic read/write operations
+//   - Timestamp tracking on updates
+//   - Concurrent access (50 readers + 10 writers)
+//   - Read immutability (GetStatus doesn't modify state)
+//
+// Run with race detector: go test -race
+//
+// -----------------------------------------------------------------------------
+
 package cache
 
 import (
@@ -7,7 +27,13 @@ import (
 	"time"
 )
 
-// TestNew verifies the constructor initializes cache correctly
+// -----------------------------------------------------------------------------
+// Constructor Tests
+// -----------------------------------------------------------------------------
+
+// TestNew verifies the constructor initializes cache with safe defaults.
+// The cache should start in an "unavailable" state until the first real
+// health check completes.
 func TestNew(t *testing.T) {
 	c := New()
 
@@ -26,14 +52,19 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// TestUpdateAndGetStatus verifies basic update/get operations
+// -----------------------------------------------------------------------------
+// Basic Operations Tests
+// -----------------------------------------------------------------------------
+
+// TestUpdateAndGetStatus verifies the basic update/read cycle.
+// This is the fundamental operation: checker writes, handler reads.
 func TestUpdateAndGetStatus(t *testing.T) {
 	c := New()
 
-	// Update the status
+	// Simulate background checker updating status
 	c.UpdateStatus(http.StatusOK, "active")
 
-	// Get it back
+	// Simulate HTTP handler reading status
 	statusCode, state := c.GetStatus()
 
 	if statusCode != http.StatusOK {
@@ -45,30 +76,13 @@ func TestUpdateAndGetStatus(t *testing.T) {
 	}
 }
 
-// TestUpdateStatusSetsLastChecked verifies lastChecked is updated
-func TestUpdateStatusSetsLastChecked(t *testing.T) {
-	c := New()
-
-	before := time.Now()
-	time.Sleep(10 * time.Millisecond) // Small delay to ensure time difference
-
-	c.UpdateStatus(http.StatusOK, "active")
-
-	// Access lastChecked directly since it's in the same package
-	c.mu.RLock()
-	lastChecked := c.lastChecked
-	c.mu.RUnlock()
-
-	if lastChecked.Before(before) {
-		t.Errorf("lastChecked should be updated to recent time")
-	}
-}
-
-// TestMultipleUpdates verifies cache can be updated multiple times
+// TestMultipleUpdates verifies cache handles repeated updates correctly.
+// In production, the background checker updates the cache every N seconds,
+// so this simulates that continuous update pattern.
 func TestMultipleUpdates(t *testing.T) {
 	c := New()
 
-	// Table of test cases
+	// Table of test cases simulating different service states over time
 	tests := []struct {
 		name       string
 		statusCode int
@@ -96,17 +110,51 @@ func TestMultipleUpdates(t *testing.T) {
 	}
 }
 
-// TestConcurrentAccess verifies thread safety with concurrent reads/writes
+// -----------------------------------------------------------------------------
+// Timestamp Validation Tests
+// -----------------------------------------------------------------------------
+
+// TestUpdateStatusSetsLastChecked verifies that lastChecked timestamp
+// is properly updated on each status change. This is important for
+// future features like stale data detection.
+func TestUpdateStatusSetsLastChecked(t *testing.T) {
+	c := New()
+
+	before := time.Now()
+	time.Sleep(10 * time.Millisecond) // Small delay to ensure time difference
+
+	c.UpdateStatus(http.StatusOK, "active")
+
+	// Access lastChecked directly since we're in the same package
+	c.mu.RLock()
+	lastChecked := c.lastChecked
+	c.mu.RUnlock()
+
+	if lastChecked.Before(before) {
+		t.Errorf("lastChecked should be updated to recent time")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Concurrency Tests
+// -----------------------------------------------------------------------------
+
+// TestConcurrentAccess is the most important test - it verifies thread safety
+// under high concurrent load. This simulates production where:
+//   - 1 background checker writes periodically
+//   - Many HTTP handlers read simultaneously
+//
+// Run with: go test -race to detect race conditions
 func TestConcurrentAccess(t *testing.T) {
 	c := New()
 
-	// Number of concurrent operations
-	numReaders := 50
-	numWriters := 10
+	// Simulate realistic production load
+	numReaders := 50 // Multiple HTTP request handlers
+	numWriters := 10 // Background checker (simulated multiple times)
 
 	var wg sync.WaitGroup
 
-	// Start readers
+	// Start reader goroutines (simulating concurrent HTTP requests)
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
 		go func() {
@@ -117,7 +165,7 @@ func TestConcurrentAccess(t *testing.T) {
 		}()
 	}
 
-	// Start writers
+	// Start writer goroutines (simulating background checker updates)
 	for i := 0; i < numWriters; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -136,7 +184,7 @@ func TestConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to finish
 	wg.Wait()
 
-	// Verify cache is still in a valid state
+	// Verify cache is still in a valid state after concurrent access
 	statusCode, state := c.GetStatus()
 
 	// Should be one of our written states
@@ -151,12 +199,18 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-// TestGetStatusDoesNotModifyCache verifies reads don't change state
+// -----------------------------------------------------------------------------
+// Immutability Tests
+// -----------------------------------------------------------------------------
+
+// TestGetStatusDoesNotModifyCache verifies that reading the cache doesn't
+// change its state. This might seem obvious, but it's important to verify
+// that RLock/RUnlock is used correctly and doesn't have side effects.
 func TestGetStatusDoesNotModifyCache(t *testing.T) {
 	c := New()
 	c.UpdateStatus(http.StatusOK, "active")
 
-	// Get status multiple times
+	// Read status multiple times
 	for i := 0; i < 10; i++ {
 		statusCode, state := c.GetStatus()
 

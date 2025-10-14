@@ -216,6 +216,23 @@ run-tls: build generate-cert
 		--tls_cert certs/server.crt \
 		--tls_key certs/server.key
 
+# Run with Let's Encrypt autocert (host)
+run-autocert: build
+	@echo "$(COLOR_CYAN)==> Running $(BINARY_NAME) with Let's Encrypt autocert...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Requires ports 80 and 443 on this host and public DNS$(COLOR_RESET)"
+	@if [ -z "$${HEALTH_TLS_AUTOCERT_DOMAIN}" ]; then \
+		echo "$(COLOR_RED)[ERR]$(COLOR_RESET) Set HEALTH_TLS_AUTOCERT_DOMAIN=alexfreidah.com"; exit 1; \
+	fi
+	# Use 443 per your validation; 80 is used by the ACME HTTP challenge handler
+	HEALTH_SERVICE=$${HEALTH_SERVICE:-nginx} \
+	HEALTH_PORT=443 \
+	HEALTH_INTERVAL=$${HEALTH_INTERVAL:-10} \
+	HEALTH_TLS_AUTOCERT=true \
+	HEALTH_TLS_AUTOCERT_DOMAIN=$${HEALTH_TLS_AUTOCERT_DOMAIN} \
+	HEALTH_TLS_AUTOCERT_CACHE=$${HEALTH_TLS_AUTOCERT_CACHE:-./acme-cache} \
+	HEALTH_TLS_AUTOCERT_EMAIL=$${HEALTH_TLS_AUTOCERT_EMAIL:-} \
+	./$(BUILD_DIR)/$(BINARY_NAME)
+
 # Docker run with TLS
 docker-run-tls: docker-build generate-cert
 	@echo "$(COLOR_CYAN)==> Running Docker container with TLS...$(COLOR_RESET)"
@@ -231,6 +248,28 @@ docker-run-tls: docker-build generate-cert
 		--tls_enabled \
 		--tls_cert /app/certs/server.crt \
 		--tls_key /app/certs/server.key
+
+# Docker run with Let's Encrypt autocert
+docker-run-autocert: docker-build
+	@echo "$(COLOR_CYAN)==> Running Docker container with Let's Encrypt autocert...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Requires public DNS -> host IP, and ports 80/443 free$(COLOR_RESET)"
+	@if [ -z "$${HEALTH_TLS_AUTOCERT_DOMAIN}" ]; then \
+		echo "$(COLOR_RED)[ERR]$(COLOR_RESET) Set HEALTH_TLS_AUTOCERT_DOMAIN=your.domain.tld"; exit 1; \
+	fi
+	mkdir -p $${HEALTH_TLS_AUTOCERT_CACHE:-$(PWD)/acme-cache}
+	docker run --rm \
+		--network host \
+		--cap-add=NET_BIND_SERVICE \
+		-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
+		-v $${HEALTH_TLS_AUTOCERT_CACHE:-$(PWD)/acme-cache}:/var/cache/health-checker \
+		-e HEALTH_SERVICE=$${HEALTH_SERVICE:-nginx} \
+		-e HEALTH_PORT=443 \
+		-e HEALTH_INTERVAL=$${HEALTH_INTERVAL:-10} \
+		-e HEALTH_TLS_AUTOCERT=true \
+		-e HEALTH_TLS_AUTOCERT_DOMAIN=$${HEALTH_TLS_AUTOCERT_DOMAIN} \
+		-e HEALTH_TLS_AUTOCERT_CACHE=/var/cache/health-checker \
+		-e HEALTH_TLS_AUTOCERT_EMAIL=$${HEALTH_TLS_AUTOCERT_EMAIL:-} \
+		$(FULL_IMAGE):latest
 
 # Clean certificates
 clean-certs:

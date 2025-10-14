@@ -16,12 +16,15 @@ services:
     # Mount host D-Bus socket for systemd access
     volumes:
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
+      # Uncomment to mount TLS certificates for HTTPS
+      # - ./certs:/app/certs:ro
     
     # Network mode host allows access to host's systemd
     # Required for D-Bus communication with systemd
     network_mode: host
     
     # Override default command
+    # HTTP Mode (default)
     command:
       - "--service"
       - "cron"
@@ -30,11 +33,35 @@ services:
       - "--interval"
       - "10"
     
+    # HTTPS Mode (uncomment to enable TLS)
+    # command:
+    #   - "--service"
+    #   - "cron"
+    #   - "--port"
+    #   - "8443"
+    #   - "--interval"
+    #   - "10"
+    #   - "--tls-enabled"
+    #   - "--tls-cert"
+    #   - "/app/certs/server.crt"
+    #   - "--tls-key"
+    #   - "/app/certs/server.key"
+    
     # Environment variables (alternative to flags)
+    # HTTP Mode
     # environment:
     #   HEALTH_SERVICE: nginx
     #   HEALTH_PORT: 8080
     #   HEALTH_INTERVAL: 10
+    
+    # HTTPS Mode (uncomment to enable TLS via environment)
+    # environment:
+    #   HEALTH_SERVICE: nginx
+    #   HEALTH_PORT: 8443
+    #   HEALTH_INTERVAL: 10
+    #   HEALTH_TLS_ENABLED: "true"
+    #   HEALTH_TLS_CERT: /app/certs/server.crt
+    #   HEALTH_TLS_KEY: /app/certs/server.key
     
     # Restart policy
     restart: unless-stopped

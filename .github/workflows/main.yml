@@ -37,6 +37,7 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.25.1'
+        cache: true
 
     # Ensure user-local and GOPATH bins are on PATH and install Checkov via pipx
     # (avoids PEP 668 "externally-managed-environment" errors)
@@ -77,6 +78,7 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.25.1'
+        cache: true
 
     # Ensure user-local and GOPATH bins are on PATH and install Checkov via pipx
     # (avoids PEP 668 "externally-managed-environment" errors)
@@ -104,4 +106,3 @@ jobs:
         echo "Image: docker-mirror.service.consul:5000/health-checker:${{ github.sha }}"
         echo "Commit: ${{ github.sha }}"
         echo "Pushed to registry: docker-mirror.service.consul:5000"
-

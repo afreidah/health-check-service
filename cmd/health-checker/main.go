@@ -31,6 +31,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -45,6 +46,7 @@ import (
 	"github.com/afreidah/health-check-service/internal/handlers"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func main() {
@@ -79,21 +81,60 @@ func main() {
 	// -------------------------------------------------------------------------
 	// HTTP Server Setup
 	// -------------------------------------------------------------------------
-	// Initialize thread-safe cache for service status
 	serviceCache := cache.New()
 
-	// Register HTTP handlers for health checks and metrics
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		handlers.HealthHandler(w, r, serviceCache)
 	})
 	http.Handle("/metrics", promhttp.Handler())
 
-	// Configure HTTP server with production timeouts
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
+	}
+
+	// -------------------------------------------------------------------------
+	// TLS Configuration
+	// -------------------------------------------------------------------------
+	var certManager *autocert.Manager
+
+	if cfg.TLSAutocert {
+		// Let's Encrypt with autocert
+		certManager = &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(cfg.TLSAutocertDomain),
+			Cache:      autocert.DirCache(cfg.TLSAutocertCache),
+			Email:      cfg.TLSAutocertEmail,
+		}
+
+		srv.TLSConfig = &tls.Config{
+			GetCertificate: certManager.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+		}
+
+		log.Printf("Let's Encrypt autocert enabled for domain: %s", cfg.TLSAutocertDomain)
+
+		// Start HTTP server for ACME challenges on port 80
+		go func() {
+			log.Println("Starting HTTP server on :80 for ACME challenges")
+			if err := http.ListenAndServe(":80", certManager.HTTPHandler(nil)); err != nil {
+				log.Printf("ACME challenge server error: %v", err)
+			}
+		}()
+
+	} else if cfg.TLSEnabled {
+		// Manual certificate files
+		srv.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			},
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -108,14 +149,27 @@ func main() {
 	go checker.StartServiceChecker(checkerCtx, conn, cfg.Service, serviceCache, interval)
 
 	// -------------------------------------------------------------------------
-	// HTTP Server Startup
+	// HTTP/HTTPS Server Startup
 	// -------------------------------------------------------------------------
-	// Run HTTP server in background goroutine to allow graceful shutdown
 	go func() {
-		log.Printf("Monitoring %s on :%d", cfg.Service, cfg.Port)
-		log.Printf("Metrics available at :%d/metrics", cfg.Port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+		if cfg.TLSAutocert {
+			log.Printf("Monitoring %s on :%d (HTTPS with Let's Encrypt)", cfg.Service, cfg.Port)
+			log.Printf("Metrics available at https://%s:%d/metrics", cfg.TLSAutocertDomain, cfg.Port)
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("HTTPS server failed: %v", err)
+			}
+		} else if cfg.TLSEnabled {
+			log.Printf("Monitoring %s on :%d (HTTPS with manual certs)", cfg.Service, cfg.Port)
+			log.Printf("Metrics available at https://localhost:%d/metrics", cfg.Port)
+			if err := srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("HTTPS server failed: %v", err)
+			}
+		} else {
+			log.Printf("Monitoring %s on :%d (HTTP)", cfg.Service, cfg.Port)
+			log.Printf("Metrics available at http://localhost:%d/metrics", cfg.Port)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("HTTP server failed: %v", err)
+			}
 		}
 	}()
 

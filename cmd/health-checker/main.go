@@ -1,8 +1,8 @@
+// Package main
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,77 +13,83 @@ import (
 
 	"github.com/afreidah/health-check-service/internal/cache"
 	"github.com/afreidah/health-check-service/internal/checker"
+	"github.com/afreidah/health-check-service/internal/config"
 	"github.com/afreidah/health-check-service/internal/handlers"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	// Handle flags
-	cache := cache.New()
-	portFlag := flag.Int("port", 8080, "port to listen on")
-	intervalFlag := flag.Int("interval", 10, "interval between service health checks in seconds")
-	serviceFlag := flag.String("service", "", "service to monitor")
-	flag.Parse()
+	// Load and validate configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
 
-	port := *portFlag
-	interval := time.Duration(*intervalFlag)
-	service := *serviceFlag
-
-	// D-Bus connection
+	// Connect to D-Bus
 	ctx := context.Background()
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to connect to D-Bus: %v", err)
 	}
 	defer conn.Close()
 
+	// Verify service exists in systemd (fail fast)
+	_, err = conn.GetUnitPropertyContext(ctx, cfg.Service+".service", "ActiveState")
+	if err != nil {
+		log.Fatalf("Service '%s' not found in systemd: %v", cfg.Service, err)
+	}
+	log.Printf("Successfully validated service: %s", cfg.Service)
+
+	// Initialize cache
+	serviceCache := cache.New()
+
 	// Setup HTTP handlers
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		handlers.HealthHandler(w, r, cache)
+		handlers.HealthHandler(w, r, serviceCache)
 	})
 	http.Handle("/metrics", promhttp.Handler())
 
 	// Create HTTP server
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Create a separate cancellable context for the background checker
+	// Create cancellable context for background checker
 	checkerCtx, checkerCancel := context.WithCancel(context.Background())
 	defer checkerCancel()
 
-	// start background status worker
-	go checker.StartServiceChecker(checkerCtx, conn, service, cache, interval*time.Second)
+	// Start background service checker
+	interval := time.Duration(cfg.Interval) * time.Second
+	go checker.StartServiceChecker(checkerCtx, conn, cfg.Service, serviceCache, interval)
 
-	// Start server in a goroutine
+	// Start HTTP server in goroutine
 	go func() {
-		log.Printf("Monitoring %s on :%d/health", service, port)
-		log.Printf("Metrics available at :%d/metrics", port)
+		log.Printf("Monitoring %s on :%d", cfg.Service, cfg.Port)
+		log.Printf("Metrics available at :%d/metrics", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed: %v", err)
 		}
 	}()
 
-	// Setup signal handling
+	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Wait for signal
+	// Wait for shutdown signal
 	<-sigChan
 	log.Println("Shutdown signal received, gracefully shutting down...")
 
-	// shut down the background worker first
+	// Stop background checker first
 	checkerCancel()
 
-	// shut down the http server
+	// Shutdown HTTP server with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Attempt graceful shutdown
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}

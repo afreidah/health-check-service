@@ -10,20 +10,40 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 )
 
+// Systemd ActiveState values
+const (
+	StateActive       = "active"
+	StateInactive     = "inactive"
+	StateFailed       = "failed"
+	StateActivating   = "activating"
+	StateDeactivating = "deactivating"
+	StateReloading    = "reloading"
+)
+
 func healthHandler(w http.ResponseWriter, r *http.Request, conn *dbus.Conn, service string) {
 	prop, err := conn.GetUnitPropertyContext(r.Context(), service+".service", "ActiveState")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error checking service %s: %v", service, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
-	activeStatus := prop.Value.Value().(string)
+	activeStatus, ok := prop.Value.Value().(string)
+	if !ok {
+		log.Printf("Unexpected type for ActiveState")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	if activeStatus == "active" {
+	switch activeStatus {
+	case StateActive:
 		w.WriteHeader(http.StatusOK)
-	} else {
+	case StateInactive, StateFailed, StateActivating, StateDeactivating, StateReloading:
 		w.WriteHeader(http.StatusServiceUnavailable)
+	default:
+		// Unknown state from systemd
+		w.WriteHeader(http.StatusInternalServerError)
 	}
-	log.Printf("Status %s", activeStatus)
 }
 
 func main() {

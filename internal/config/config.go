@@ -1,4 +1,29 @@
-// Package config
+// -----------------------------------------------------------------------------
+// Configuration Management
+// -----------------------------------------------------------------------------
+//
+// This package provides flexible configuration loading with multiple sources
+// and a clear precedence order. Configuration can come from command-line flags,
+// environment variables, or YAML files, making it suitable for various
+// deployment scenarios.
+//
+// Precedence Order (highest to lowest):
+//   1. Command-line flags  - Explicit user overrides
+//   2. Environment vars    - Container/orchestration settings
+//   3. Config file         - Persistent configuration
+//   4. Default values      - Safe fallbacks
+//
+// Configuration Sources:
+//   Flags:       --port 8080 --service nginx --interval 10
+//   Environment: HEALTH_PORT=8080 HEALTH_SERVICE=nginx HEALTH_INTERVAL=10
+//   YAML file:   port: 8080, service: nginx, interval: 10
+//
+// Validation:
+//   All configuration is validated after loading to fail fast with clear
+//   error messages if required values are missing or invalid.
+//
+// -----------------------------------------------------------------------------
+
 package config
 
 import (
@@ -11,21 +36,42 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
-	"github.com/spf13/pflag" // Changed from "flag"
+	"github.com/spf13/pflag"
 )
 
-// Config holds all application configuration
+// -----------------------------------------------------------------------------
+// Type Definitions
+// -----------------------------------------------------------------------------
+
+// Config holds all application configuration values.
+// The koanf struct tags enable automatic unmarshaling from various sources.
 type Config struct {
-	Port     int    `koanf:"port"`
-	Service  string `koanf:"service"`
-	Interval int    `koanf:"interval"`
+	Port     int    `koanf:"port"`     // HTTP port to listen on
+	Service  string `koanf:"service"`  // Systemd service name to monitor
+	Interval int    `koanf:"interval"` // Health check interval in seconds
 }
 
-// Load loads configuration with precedence: flags > env vars > config file > defaults
+// -----------------------------------------------------------------------------
+// Configuration Loading
+// -----------------------------------------------------------------------------
+
+// Load reads configuration from multiple sources and returns a validated Config.
+// Sources are loaded in reverse precedence order (lowest to highest priority)
+// so that higher priority sources can override lower priority ones.
+//
+// Loading Order:
+//  1. Config file (if specified)
+//  2. Environment variables
+//  3. Command-line flags
+//
+// Returns an error if configuration is invalid or cannot be loaded.
 func Load() (*Config, error) {
 	k := koanf.New(".")
 
-	// Define command-line flags using pflag
+	// -------------------------------------------------------------------------
+	// Command-Line Flags Definition
+	// -------------------------------------------------------------------------
+	// Define all available flags with defaults and help text
 	f := pflag.NewFlagSet("health-checker", pflag.ExitOnError)
 	f.Int("port", 8080, "port to listen on")
 	f.String("service", "", "systemd service to monitor")
@@ -36,7 +82,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error parsing flags: %w", err)
 	}
 
-	// Load optional config file first (lowest priority)
+	// -------------------------------------------------------------------------
+	// Config File Loading (Lowest Priority)
+	// -------------------------------------------------------------------------
+	// Load YAML config file if specified via --config flag
+	// File is optional - no error if not provided
 	configPath, _ := f.GetString("config")
 	if configPath != "" {
 		if _, err := os.Stat(configPath); err == nil {
@@ -46,25 +96,35 @@ func Load() (*Config, error) {
 		}
 	}
 
-	// Load environment variables (middle priority)
+	// -------------------------------------------------------------------------
+	// Environment Variables (Middle Priority)
+	// -------------------------------------------------------------------------
+	// Load environment variables with HEALTH_ prefix
+	// Example: HEALTH_PORT=8080 becomes port=8080
 	if err := k.Load(env.Provider("HEALTH_", ".", func(s string) string {
 		return strings.ToLower(strings.TrimPrefix(s, "HEALTH_"))
 	}), nil); err != nil {
 		return nil, fmt.Errorf("error loading env vars: %w", err)
 	}
 
-	// Load command-line flags (highest priority)
+	// -------------------------------------------------------------------------
+	// Command-Line Flags (Highest Priority)
+	// -------------------------------------------------------------------------
+	// Load command-line flags last so they override everything else
 	if err := k.Load(posflag.Provider(f, ".", k), nil); err != nil {
 		return nil, fmt.Errorf("error loading flags: %w", err)
 	}
 
-	// Unmarshal into Config struct
+	// -------------------------------------------------------------------------
+	// Unmarshal & Validate
+	// -------------------------------------------------------------------------
+	// Convert koanf's internal map to our Config struct
 	cfg := &Config{}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
-	// Validate
+	// Validate all configuration values before returning
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -72,16 +132,25 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks that configuration values are valid
+// -----------------------------------------------------------------------------
+// Validation
+// -----------------------------------------------------------------------------
+
+// Validate checks that all configuration values are within acceptable ranges.
+// Returns a descriptive error if any value is invalid, helping users quickly
+// identify and fix configuration problems.
 func (c *Config) Validate() error {
+	// Validate port is in valid TCP port range
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1-65535, got %d", c.Port)
 	}
 
+	// Service name is required - can't monitor nothing
 	if c.Service == "" {
 		return fmt.Errorf("service name is required (use --service flag, HEALTH_SERVICE env var, or config file)")
 	}
 
+	// Interval must be at least 1 second to avoid excessive polling
 	if c.Interval < 1 {
 		return fmt.Errorf("interval must be at least 1 second, got %d", c.Interval)
 	}

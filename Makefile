@@ -50,6 +50,7 @@ COLOR_CYAN    := \033[0;36m
         install-checkov install-trivy \
         docker-build docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
         docker-scan docker-tag docker-push docker-run docker-compose-up docker-compose-down docker-clean \
+        generate-cert run-tls docker-run-tls clean-certs \
         pull_request merge help
 
 # ------------------------------------------------------------------------------
@@ -191,6 +192,53 @@ lint-verbose: install-golangci-lint
 	@golangci-lint run -v ./...
 
 # ------------------------------------------------------------------------------
+# TLS/HTTPS Targets
+# ------------------------------------------------------------------------------
+
+# Generate self-signed certificate for testing
+generate-cert:
+	@echo "$(COLOR_CYAN)==> Generating self-signed certificate...$(COLOR_RESET)"
+	@mkdir -p certs
+	@openssl req -x509 -newkey rsa:4096 -keyout certs/server.key -out certs/server.crt \
+		-days 365 -nodes -subj "/CN=localhost" 2>/dev/null
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Certificate generated: certs/server.crt"
+	@echo "$(COLOR_YELLOW)Note: This is a self-signed certificate for testing only$(COLOR_RESET)"
+
+# Run with TLS enabled
+run-tls: build generate-cert
+	@echo "$(COLOR_CYAN)==> Running $(BINARY_NAME) with TLS enabled...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Using self-signed certificate$(COLOR_RESET)"
+	./$(BUILD_DIR)/$(BINARY_NAME) \
+		--service $${SERVICE:-nginx} \
+		--port $${PORT:-8443} \
+		--interval $${INTERVAL:-10} \
+		--tls_enabled \
+		--tls_cert certs/server.crt \
+		--tls_key certs/server.key
+
+# Docker run with TLS
+docker-run-tls: docker-build generate-cert
+	@echo "$(COLOR_CYAN)==> Running Docker container with TLS...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Requires access to host D-Bus socket$(COLOR_RESET)"
+	docker run --rm \
+		-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
+		-v $(PWD)/certs:/app/certs:ro \
+		--network host \
+		$(FULL_IMAGE):latest \
+		--service $${SERVICE:-nginx} \
+		--port $${PORT:-8443} \
+		--interval $${INTERVAL:-10} \
+		--tls_enabled \
+		--tls_cert /app/certs/server.crt \
+		--tls_key /app/certs/server.key
+
+# Clean certificates
+clean-certs:
+	@echo "$(COLOR_CYAN)==> Removing certificates...$(COLOR_RESET)"
+	@rm -rf certs
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Certificates removed"
+
+# ------------------------------------------------------------------------------
 # Docker Targets
 # ------------------------------------------------------------------------------
 
@@ -322,6 +370,12 @@ help:
 	@echo "  $(COLOR_BLUE)lint-fix$(COLOR_RESET)                   - Run golangci-lint with auto-fix"
 	@echo "  $(COLOR_BLUE)lint-verbose$(COLOR_RESET)               - Run golangci-lint (verbose output)"
 	@echo ""
+	@echo "$(COLOR_YELLOW)TLS/HTTPS:$(COLOR_RESET)"
+	@echo "  $(COLOR_BLUE)generate-cert$(COLOR_RESET)              - Generate self-signed certificate for testing"
+	@echo "  $(COLOR_BLUE)run-tls$(COLOR_RESET)                    - Build and run with TLS enabled (use SERVICE=name PORT=8443)"
+	@echo "  $(COLOR_BLUE)docker-run-tls$(COLOR_RESET)             - Run Docker container with TLS enabled"
+	@echo "  $(COLOR_BLUE)clean-certs$(COLOR_RESET)                - Remove generated certificates"
+	@echo ""
 	@echo "$(COLOR_YELLOW)Docker:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)docker-build$(COLOR_RESET)               - Build Docker image"
 	@echo "  $(COLOR_BLUE)docker-scan-checkov$(COLOR_RESET)        - Scan Dockerfile with Checkov"
@@ -331,6 +385,7 @@ help:
 	@echo "  $(COLOR_BLUE)docker-tag$(COLOR_RESET)                 - Tag image (use DOCKER_TAG=version)"
 	@echo "  $(COLOR_BLUE)docker-push$(COLOR_RESET)                - Push tagged image to registry"
 	@echo "  $(COLOR_BLUE)docker-run$(COLOR_RESET)                 - Run Docker container (use SERVICE=name to customize)"
+	@echo "  $(COLOR_BLUE)docker-run-tls$(COLOR_RESET)             - Run Docker container with TLS"
 	@echo "  $(COLOR_BLUE)docker-compose-up$(COLOR_RESET)          - Start with docker compose"
 	@echo "  $(COLOR_BLUE)docker-compose-down$(COLOR_RESET)        - Stop docker compose"
 	@echo "  $(COLOR_BLUE)docker-clean$(COLOR_RESET)               - Remove Docker images"
@@ -342,12 +397,15 @@ help:
 	@echo "$(COLOR_YELLOW)Cleanup:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)clean$(COLOR_RESET)                      - Remove build artifacts"
 	@echo "  $(COLOR_BLUE)clean-all$(COLOR_RESET)                  - Remove build artifacts and Go cache"
+	@echo "  $(COLOR_BLUE)clean-certs$(COLOR_RESET)                - Remove generated certificates"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Examples:$(COLOR_RESET)"
 	@echo "  make run SERVICE=postgresql PORT=9090"
+	@echo "  make run-tls SERVICE=nginx PORT=8443"
 	@echo "  make pull_request"
 	@echo "  make merge DOCKER_TAG=v1.2.3"
 	@echo "  make docker-run SERVICE=redis"
+	@echo "  make docker-run-tls SERVICE=nginx"
 	@echo "  make docker-compose-up"
 	@echo "  make test"
 	@echo "  make lint-fix"

@@ -49,6 +49,17 @@ type Config struct {
 	Port     int    `koanf:"port"`     // HTTP port to listen on
 	Service  string `koanf:"service"`  // Systemd service name to monitor
 	Interval int    `koanf:"interval"` // Health check interval in seconds
+
+	// TLS/HTTPS configuration
+	TLSEnabled  bool   `koanf:"tls_enabled"` // Enable HTTPS
+	TLSCertFile string `koanf:"tls_cert"`    // Path to cert file
+	TLSKeyFile  string `koanf:"tls_key"`     // Path to key file
+
+	// Let's Encrypt / autocert Configuration
+	TLSAutocert       bool   `koanf:"tls_autocert"`        // Enable autocert
+	TLSAutocertDomain string `koanf:"tls_autocert_domain"` // Domain for cert
+	TLSAutocertCache  string `koanf:"tls_autocert_cache"`  // Cache directory
+	TLSAutocertEmail  string `koanf:"tls_autocert_email"`  // Optional email
 }
 
 // -----------------------------------------------------------------------------
@@ -77,6 +88,13 @@ func Load() (*Config, error) {
 	f.String("service", "", "systemd service to monitor")
 	f.Int("interval", 10, "check interval in seconds")
 	f.String("config", "", "path to config file (optional)")
+	f.Bool("tls_enabled", false, "enable HTTPS/TLS")
+	f.String("tls_cert", "", "path to TLS certificate file")
+	f.String("tls_key", "", "path to TLS private key file")
+	f.Bool("tls_autocert", false, "enable Let's Encrypt automatic certificates")
+	f.String("tls_autocert_domain", "", "domain name for Let's Encrypt certificate")
+	f.String("tls_autocert_cache", "/var/cache/health-checker", "directory for certificate cache")
+	f.String("tls_autocert_email", "", "email for Let's Encrypt notifications (optional)")
 
 	if err := f.Parse(os.Args[1:]); err != nil {
 		return nil, fmt.Errorf("error parsing flags: %w", err)
@@ -153,6 +171,37 @@ func (c *Config) Validate() error {
 	// Interval must be at least 1 second to avoid excessive polling
 	if c.Interval < 1 {
 		return fmt.Errorf("interval must be at least 1 second, got %d", c.Interval)
+	}
+
+	if c.TLSEnabled {
+		if c.TLSCertFile == "" {
+			return fmt.Errorf("tls-cert is required when TLS is enabled")
+		}
+		if c.TLSKeyFile == "" {
+			return fmt.Errorf("tls-key is required when TLS is enabled")
+		}
+		// Verify files exist
+		if _, err := os.Stat(c.TLSCertFile); err != nil {
+			return fmt.Errorf("tls-cert file not found: %w", err)
+		}
+		if _, err := os.Stat(c.TLSKeyFile); err != nil {
+			return fmt.Errorf("tls-key file not found: %w", err)
+		}
+	}
+
+	if c.TLSAutocert {
+		if c.TLSAutocertDomain == "" {
+			return fmt.Errorf("tls-autocert-domain is required when using autocert")
+		}
+		// Autocert requires port 443
+		if c.Port != 443 {
+			return fmt.Errorf("autocert requires port 443, got %d", c.Port)
+		}
+	}
+
+	// Can't use both manual certs and autocert
+	if c.TLSEnabled && c.TLSAutocert {
+		return fmt.Errorf("cannot use both manual TLS and autocert")
 	}
 
 	return nil

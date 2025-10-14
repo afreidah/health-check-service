@@ -28,49 +28,66 @@ jobs:
     name: PR Pipeline
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, linux]
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.25.1'
-    
+
+    # Ensure user-local and GOPATH bins are on PATH and Checkov is installed.
+    # This keeps the Makefile unchanged while fixing "checkov: No such file or directory"
+    - name: Tooling PATH + preinstall
+      run: |
+        echo "$HOME/.local/bin:$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        python3 -m pip install --user --upgrade pip
+        python3 -m pip install --user checkov
+
     - name: Run PR Pipeline
       run: make pull_request
-    
+
     - name: PR Check Summary
       if: always()
       run: |
         echo "✅ PR pipeline complete"
         echo "Branch: ${{ github.head_ref }}"
         echo "Commit: ${{ github.sha }}"
-  
+
   # Merge pipeline - runs on push to main
   merge:
     name: Build, Tag, and Push
     if: github.event_name == 'push'
     runs-on: [self-hosted, linux]
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.25.1'
-    
+
+    # Ensure user-local and GOPATH bins are on PATH and Checkov is installed.
+    # This keeps the Makefile unchanged while fixing "checkov: No such file or directory"
+    - name: Tooling PATH + preinstall
+      run: |
+        echo "$HOME/.local/bin:$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        python3 -m pip install --user --upgrade pip
+        python3 -m pip install --user checkov
+
     - name: Run Merge Pipeline
       run: make merge DOCKER_TAG=${{ github.sha }}
       env:
         DOCKER_TAG: ${{ github.sha }}
-    
+
     - name: Deployment Summary
       run: |
         echo "✅ Merge pipeline complete"
         echo "Image: docker-mirror.service.consul:5000/health-checker:${{ github.sha }}"
         echo "Commit: ${{ github.sha }}"
         echo "Pushed to registry: docker-mirror.service.consul:5000"
+

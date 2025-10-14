@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 )
@@ -41,13 +45,12 @@ func healthHandler(w http.ResponseWriter, r *http.Request, conn *dbus.Conn, serv
 	case StateInactive, StateFailed, StateActivating, StateDeactivating, StateReloading:
 		w.WriteHeader(http.StatusServiceUnavailable)
 	default:
-		// Unknown state from systemd
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 }
 
 func main() {
-	// handle flags
+	// Handle flags
 	portFlag := flag.Int("port", 8080, "port to listen on")
 	serviceFlag := flag.String("service", "", "service to monitor")
 	flag.Parse()
@@ -55,7 +58,7 @@ func main() {
 	port := *portFlag
 	service := *serviceFlag
 
-	// dbus connection
+	// D-Bus connection
 	ctx := context.Background()
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
@@ -63,12 +66,43 @@ func main() {
 	}
 	defer conn.Close()
 
+	// Setup HTTP handler
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		healthHandler(w, r, conn, service)
 	})
 
-	log.Printf("Monitoring %s on :%d", service, port)
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil); err != nil {
-		log.Fatal(err)
+	// Create HTTP server
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
+
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Monitoring %s on :%d", service, port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Setup signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Wait for signal
+	<-sigChan
+	log.Println("Shutdown signal received, gracefully shutting down...")
+
+	// Create shutdown context with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Attempt graceful shutdown
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+
+	log.Println("Server stopped")
 }

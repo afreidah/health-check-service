@@ -1,11 +1,24 @@
+# ------------------------------------------------------------------------------
+# GitHub Actions Workflow - PR Checks
+#
+# Runs automated checks on pull requests to main branch:
+# - Code formatting validation
+# - Linting with golangci-lint
+# - Unit tests
+# - Binary build verification
+#
+# Triggers on: PR open, PR synchronize (new commits), PR reopen
+# ------------------------------------------------------------------------------
+
 name: PR Checks
 
 on:
   pull_request:
     branches: [ main ]
-  push:
-    branches-ignore:
-      - main
+
+# ------------------------------------------------------------------------------
+# Jobs
+# ------------------------------------------------------------------------------
 
 jobs:
   pr-checks:
@@ -13,13 +26,17 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    # ------------------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------------------
+    
     - name: Checkout code
       uses: actions/checkout@v4
     
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version: '1.25.1'
     
     - name: Cache Go modules
       uses: actions/cache@v4
@@ -31,8 +48,16 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
     
+    # ------------------------------------------------------------------------------
+    # Dependency Management
+    # ------------------------------------------------------------------------------
+    
     - name: Download dependencies
       run: make deps
+    
+    # ------------------------------------------------------------------------------
+    # Code Quality Checks
+    # ------------------------------------------------------------------------------
     
     - name: Format check
       run: |
@@ -42,11 +67,19 @@ jobs:
     - name: Run linter
       run: make lint
     
+    # ------------------------------------------------------------------------------
+    # Testing and Build
+    # ------------------------------------------------------------------------------
+    
     - name: Run tests
       run: make test
     
     - name: Build binary
       run: make build
+    
+    # ------------------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------------------
     
     - name: PR Check Summary
       if: always()

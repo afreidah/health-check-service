@@ -18,6 +18,17 @@ BUILD_DIR := bin
 # Main package location
 MAIN_PATH := ./cmd/health-checker/main.go
 
+# Docker image name and tag
+DOCKER_IMAGE := health-checker
+DOCKER_TAG ?= latest
+
+# Container registry
+REGISTRY_HOST ?= docker-mirror.service.consul
+REGISTRY_PORT ?= 5000
+REGISTRY ?= $(REGISTRY_HOST):$(REGISTRY_PORT)
+# Full image name with registry
+FULL_IMAGE := $(REGISTRY)/$(DOCKER_IMAGE)
+
 # Go commands
 GOCMD := go
 GOBUILD := $(GOCMD) build
@@ -35,7 +46,11 @@ COLOR_BLUE    := \033[0;34m
 COLOR_CYAN    := \033[0;36m
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
-        test fmt lint lint-fix lint-verbose install-golangci-lint install-gotestsum help
+        test fmt lint lint-fix lint-verbose install-golangci-lint install-gotestsum \
+        install-checkov install-trivy \
+        docker-build docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
+        docker-scan docker-tag docker-push docker-run docker-compose-up docker-compose-down docker-clean \
+        pull_request merge help
 
 # ------------------------------------------------------------------------------
 # Default Target
@@ -77,6 +92,26 @@ install-gotestsum:
 		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gotestsum installed"; \
 	else \
 		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gotestsum already installed"; \
+	fi
+
+# Install checkov if not present
+install-checkov:
+	@if ! command -v checkov >/dev/null 2>&1; then \
+		echo "$(COLOR_CYAN)==> Installing Checkov...$(COLOR_RESET)"; \
+		pip3 install checkov || pip install checkov; \
+		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Checkov installed"; \
+	else \
+		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Checkov already installed"; \
+	fi
+
+# Install trivy if not present
+install-trivy:
+	@if ! command -v trivy >/dev/null 2>&1; then \
+		echo "$(COLOR_CYAN)==> Installing Trivy...$(COLOR_RESET)"; \
+		curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $$(go env GOPATH)/bin; \
+		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Trivy installed"; \
+	else \
+		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Trivy already installed"; \
 	fi
 
 # ------------------------------------------------------------------------------
@@ -156,6 +191,91 @@ lint-verbose: install-golangci-lint
 	@golangci-lint run -v ./...
 
 # ------------------------------------------------------------------------------
+# Docker Targets
+# ------------------------------------------------------------------------------
+
+# Build Docker image
+docker-build:
+	@echo "$(COLOR_CYAN)==> Building Docker image...$(COLOR_RESET)"
+	docker build -t $(FULL_IMAGE):latest .
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Docker image built: $(FULL_IMAGE):latest"
+
+# Scan Dockerfile with Checkov
+docker-scan-checkov: install-checkov
+	@echo "$(COLOR_CYAN)==> Scanning Dockerfile with Checkov...$(COLOR_RESET)"
+	checkov -f Dockerfile
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Checkov scan complete"
+
+# Scan Dockerfile with Trivy (config scan)
+docker-scan-trivy-config: install-trivy
+	@echo "$(COLOR_CYAN)==> Scanning Dockerfile with Trivy (config)...$(COLOR_RESET)"
+	trivy config --quiet --file-patterns "dockerfile:Dockerfile" .
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Trivy config scan complete"
+
+# Scan built image with Trivy (fail on CRITICAL)
+docker-scan-trivy-image: docker-build install-trivy
+	@echo "$(COLOR_CYAN)==> Scanning Docker image with Trivy (CRITICAL)...$(COLOR_RESET)"
+	trivy image --quiet --severity CRITICAL $(FULL_IMAGE):latest
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Trivy image scan complete"
+
+# Run all Docker security scans (PR pipeline)
+docker-scan: docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) All security scans complete"
+
+# Tag latest image with release tag (for merge)
+docker-tag:
+	@echo "$(COLOR_CYAN)==> Tagging image :latest -> :$(DOCKER_TAG)...$(COLOR_RESET)"
+	docker tag $(FULL_IMAGE):latest $(FULL_IMAGE):$(DOCKER_TAG)
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Tagged: $(FULL_IMAGE):$(DOCKER_TAG)"
+
+# Push tagged image to registry
+docker-push:
+	@echo "$(COLOR_CYAN)==> Pushing $(FULL_IMAGE):$(DOCKER_TAG)...$(COLOR_RESET)"
+	docker push $(FULL_IMAGE):$(DOCKER_TAG)
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Pushed: $(FULL_IMAGE):$(DOCKER_TAG)"
+
+# Run Docker container (requires D-Bus access)
+docker-run: docker-build
+	@echo "$(COLOR_CYAN)==> Running Docker container...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Requires access to host D-Bus socket$(COLOR_RESET)"
+	docker run --rm \
+		-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
+		--network host \
+		$(FULL_IMAGE):latest \
+		--service $${SERVICE:-nginx} \
+		--port $${PORT:-8080} \
+		--interval $${INTERVAL:-10}
+
+# Run with docker compose
+docker-compose-up:
+	@echo "$(COLOR_CYAN)==> Starting with docker compose...$(COLOR_RESET)"
+	docker compose up --build
+
+# Stop docker compose
+docker-compose-down:
+	@echo "$(COLOR_CYAN)==> Stopping docker compose...$(COLOR_RESET)"
+	docker compose down
+
+# Clean Docker artifacts
+docker-clean:
+	@echo "$(COLOR_CYAN)==> Cleaning Docker images...$(COLOR_RESET)"
+	docker rmi $(FULL_IMAGE):latest 2>/dev/null || true
+	docker rmi $(FULL_IMAGE):$(DOCKER_TAG) 2>/dev/null || true
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Docker cleanup complete"
+
+# ------------------------------------------------------------------------------
+# CI/CD Pipeline Targets
+# ------------------------------------------------------------------------------
+
+# PR pipeline: format -> lint -> test -> build -> docker scans
+pull_request: fmt lint test build docker-scan
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) PR pipeline complete"
+
+# Merge pipeline: re-run PR checks, tag, and push
+merge: pull_request docker-tag docker-push
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Merge pipeline complete - image pushed to registry"
+
+# ------------------------------------------------------------------------------
 # Cleanup Targets
 # ------------------------------------------------------------------------------
 
@@ -181,31 +301,53 @@ help:
 	@echo "$(COLOR_CYAN)Health Check Service - Available Targets:$(COLOR_RESET)"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Setup & Dependencies:$(COLOR_RESET)"
-	@echo "  $(COLOR_BLUE)init$(COLOR_RESET)                  - Initialize project (install tools, fetch deps)"
-	@echo "  $(COLOR_BLUE)deps$(COLOR_RESET)                  - Download and tidy Go dependencies"
-	@echo "  $(COLOR_BLUE)install-golangci-lint$(COLOR_RESET) - Install golangci-lint"
-	@echo "  $(COLOR_BLUE)install-gotestsum$(COLOR_RESET)     - Install gotestsum"
+	@echo "  $(COLOR_BLUE)init$(COLOR_RESET)                       - Initialize project (install tools, fetch deps)"
+	@echo "  $(COLOR_BLUE)deps$(COLOR_RESET)                       - Download and tidy Go dependencies"
+	@echo "  $(COLOR_BLUE)install-golangci-lint$(COLOR_RESET)      - Install golangci-lint"
+	@echo "  $(COLOR_BLUE)install-gotestsum$(COLOR_RESET)          - Install gotestsum"
+	@echo "  $(COLOR_BLUE)install-checkov$(COLOR_RESET)            - Install Checkov"
+	@echo "  $(COLOR_BLUE)install-trivy$(COLOR_RESET)              - Install Trivy"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Build & Run:$(COLOR_RESET)"
-	@echo "  $(COLOR_BLUE)all$(COLOR_RESET)                   - Fetch dependencies and build (default)"
-	@echo "  $(COLOR_BLUE)build$(COLOR_RESET)                 - Build the binary"
-	@echo "  $(COLOR_BLUE)run$(COLOR_RESET)                   - Build and run (use SERVICE=name PORT=8080 to customize)"
-	@echo "  $(COLOR_BLUE)run-env$(COLOR_RESET)               - Run with environment variables"
-	@echo "  $(COLOR_BLUE)run-config$(COLOR_RESET)            - Run with config file"
+	@echo "  $(COLOR_BLUE)all$(COLOR_RESET)                        - Fetch dependencies and build (default)"
+	@echo "  $(COLOR_BLUE)build$(COLOR_RESET)                      - Build the binary"
+	@echo "  $(COLOR_BLUE)run$(COLOR_RESET)                        - Build and run (use SERVICE=name PORT=8080 to customize)"
+	@echo "  $(COLOR_BLUE)run-env$(COLOR_RESET)                    - Run with environment variables"
+	@echo "  $(COLOR_BLUE)run-config$(COLOR_RESET)                 - Run with config file"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Development:$(COLOR_RESET)"
-	@echo "  $(COLOR_BLUE)test$(COLOR_RESET)                  - Run Go tests"
-	@echo "  $(COLOR_BLUE)fmt$(COLOR_RESET)                   - Format Go code"
-	@echo "  $(COLOR_BLUE)lint$(COLOR_RESET)                  - Run golangci-lint"
-	@echo "  $(COLOR_BLUE)lint-fix$(COLOR_RESET)              - Run golangci-lint with auto-fix"
-	@echo "  $(COLOR_BLUE)lint-verbose$(COLOR_RESET)          - Run golangci-lint (verbose output)"
+	@echo "  $(COLOR_BLUE)test$(COLOR_RESET)                       - Run Go tests"
+	@echo "  $(COLOR_BLUE)fmt$(COLOR_RESET)                        - Format Go code"
+	@echo "  $(COLOR_BLUE)lint$(COLOR_RESET)                       - Run golangci-lint"
+	@echo "  $(COLOR_BLUE)lint-fix$(COLOR_RESET)                   - Run golangci-lint with auto-fix"
+	@echo "  $(COLOR_BLUE)lint-verbose$(COLOR_RESET)               - Run golangci-lint (verbose output)"
+	@echo ""
+	@echo "$(COLOR_YELLOW)Docker:$(COLOR_RESET)"
+	@echo "  $(COLOR_BLUE)docker-build$(COLOR_RESET)               - Build Docker image"
+	@echo "  $(COLOR_BLUE)docker-scan-checkov$(COLOR_RESET)        - Scan Dockerfile with Checkov"
+	@echo "  $(COLOR_BLUE)docker-scan-trivy-config$(COLOR_RESET)   - Scan Dockerfile with Trivy (config)"
+	@echo "  $(COLOR_BLUE)docker-scan-trivy-image$(COLOR_RESET)    - Scan image with Trivy (CRITICAL)"
+	@echo "  $(COLOR_BLUE)docker-scan$(COLOR_RESET)                - Run all security scans"
+	@echo "  $(COLOR_BLUE)docker-tag$(COLOR_RESET)                 - Tag image (use DOCKER_TAG=version)"
+	@echo "  $(COLOR_BLUE)docker-push$(COLOR_RESET)                - Push tagged image to registry"
+	@echo "  $(COLOR_BLUE)docker-run$(COLOR_RESET)                 - Run Docker container (use SERVICE=name to customize)"
+	@echo "  $(COLOR_BLUE)docker-compose-up$(COLOR_RESET)          - Start with docker compose"
+	@echo "  $(COLOR_BLUE)docker-compose-down$(COLOR_RESET)        - Stop docker compose"
+	@echo "  $(COLOR_BLUE)docker-clean$(COLOR_RESET)               - Remove Docker images"
+	@echo ""
+	@echo "$(COLOR_YELLOW)CI/CD:$(COLOR_RESET)"
+	@echo "  $(COLOR_BLUE)pull_request$(COLOR_RESET)               - Run full PR pipeline (fmt, lint, test, build, scans)"
+	@echo "  $(COLOR_BLUE)merge$(COLOR_RESET)                      - Run merge pipeline (PR checks + tag + push)"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Cleanup:$(COLOR_RESET)"
-	@echo "  $(COLOR_BLUE)clean$(COLOR_RESET)                 - Remove build artifacts"
-	@echo "  $(COLOR_BLUE)clean-all$(COLOR_RESET)             - Remove build artifacts and Go cache"
+	@echo "  $(COLOR_BLUE)clean$(COLOR_RESET)                      - Remove build artifacts"
+	@echo "  $(COLOR_BLUE)clean-all$(COLOR_RESET)                  - Remove build artifacts and Go cache"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Examples:$(COLOR_RESET)"
 	@echo "  make run SERVICE=postgresql PORT=9090"
-	@echo "  make run-env SERVICE=redis"
+	@echo "  make pull_request"
+	@echo "  make merge DOCKER_TAG=v1.2.3"
+	@echo "  make docker-run SERVICE=redis"
+	@echo "  make docker-compose-up"
 	@echo "  make test"
 	@echo "  make lint-fix"

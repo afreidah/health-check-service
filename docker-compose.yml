@@ -1,0 +1,50 @@
+# ------------------------------------------------------------------------------
+# Docker Compose - Health Check Service
+#
+# For local testing and development
+# Usage: docker compose up
+# ------------------------------------------------------------------------------
+
+services:
+  health-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: health-checker:latest
+    container_name: health-checker
+    
+    # Mount host D-Bus socket for systemd access
+    volumes:
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
+    
+    # Network mode host allows access to host's systemd
+    # Required for D-Bus communication with systemd
+    network_mode: host
+    
+    # Override default command
+    command:
+      - "--service"
+      - "cron"
+      - "--port"
+      - "8080"
+      - "--interval"
+      - "10"
+    
+    # Environment variables (alternative to flags)
+    # environment:
+    #   HEALTH_SERVICE: nginx
+    #   HEALTH_PORT: 8080
+    #   HEALTH_INTERVAL: 10
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M

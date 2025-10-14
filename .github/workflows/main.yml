@@ -1,19 +1,21 @@
 # ------------------------------------------------------------------------------
-# GitHub Actions Workflow - PR Checks
+# GitHub Actions Workflow - CI/CD Pipeline
 #
-# Runs automated checks on pull requests to main branch:
-# - Code formatting validation
-# - Linting with golangci-lint
-# - Unit tests
-# - Binary build verification
+# PR Pipeline (pull_request):
+# - Code formatting, linting, tests, build, security scans
 #
-# Triggers on: PR open, PR synchronize (new commits), PR reopen
+# Merge Pipeline (push to main):
+# - Re-runs all PR checks
+# - Tags Docker image with commit SHA
+# - Pushes to container registry
 # ------------------------------------------------------------------------------
 
-name: PR Checks
+name: CI/CD Pipeline
 
 on:
   pull_request:
+    branches: [ main ]
+  push:
     branches: [ main ]
 
 # ------------------------------------------------------------------------------
@@ -21,69 +23,85 @@ on:
 # ------------------------------------------------------------------------------
 
 jobs:
+  # PR checks - runs on pull requests
   pr-checks:
-    name: PR Build, Test, and Lint
-    runs-on: ubuntu-latest
-    
+    name: PR Pipeline
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, linux]
+
     steps:
-    # ------------------------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------------------------
-    
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.25.1'
-    
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    
-    # ------------------------------------------------------------------------------
-    # Dependency Management
-    # ------------------------------------------------------------------------------
-    
-    - name: Download dependencies
-      run: make deps
-    
-    # ------------------------------------------------------------------------------
-    # Code Quality Checks
-    # ------------------------------------------------------------------------------
-    
-    - name: Format check
+
+    # Ensure user-local and GOPATH bins are on PATH and install Checkov via pipx
+    # (avoids PEP 668 "externally-managed-environment" errors)
+    - name: Tooling PATH + install Checkov (pipx)
       run: |
-        make fmt
-        git diff --exit-code || (echo "❌ Code is not formatted. Run 'make fmt' locally." && exit 1)
-    
-    - name: Run linter
-      run: make lint
-    
-    # ------------------------------------------------------------------------------
-    # Testing and Build
-    # ------------------------------------------------------------------------------
-    
-    - name: Run tests
-      run: make test
-    
-    - name: Build binary
-      run: make build
-    
-    # ------------------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------------------
-    
+        echo "$HOME/.local/bin:$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        if ! command -v pipx >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y python3-venv pipx
+          fi
+        fi
+        python3 -m pipx ensurepath || true
+        pipx install --force checkov
+
+    - name: Run PR Pipeline
+      run: make pull_request
+
     - name: PR Check Summary
       if: always()
       run: |
-        echo "✅ PR checks complete"
+        echo "✅ PR pipeline complete"
         echo "Branch: ${{ github.head_ref }}"
         echo "Commit: ${{ github.sha }}"
+
+  # Merge pipeline - runs on push to main
+  merge:
+    name: Build, Tag, and Push
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, linux]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.1'
+
+    # Ensure user-local and GOPATH bins are on PATH and install Checkov via pipx
+    # (avoids PEP 668 "externally-managed-environment" errors)
+    - name: Tooling PATH + install Checkov (pipx)
+      run: |
+        echo "$HOME/.local/bin:$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        if ! command -v pipx >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y python3-venv pipx
+          fi
+        fi
+        python3 -m pipx ensurepath || true
+        pipx install --force checkov
+
+    - name: Run Merge Pipeline
+      run: make merge DOCKER_TAG=${{ github.sha }}
+      env:
+        DOCKER_TAG: ${{ github.sha }}
+
+    - name: Deployment Summary
+      run: |
+        echo "✅ Merge pipeline complete"
+        echo "Image: docker-mirror.service.consul:5000/health-checker:${{ github.sha }}"
+        echo "Commit: ${{ github.sha }}"
+        echo "Pushed to registry: docker-mirror.service.consul:5000"
+

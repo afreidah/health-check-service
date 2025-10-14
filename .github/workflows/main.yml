@@ -38,13 +38,20 @@ jobs:
       with:
         go-version: '1.25.1'
 
-    # Ensure user-local and GOPATH bins are on PATH and Checkov is installed.
-    # This keeps the Makefile unchanged while fixing "checkov: No such file or directory"
-    - name: Tooling PATH + preinstall
+    # Ensure user-local and GOPATH bins are on PATH and install Checkov via pipx
+    # (avoids PEP 668 "externally-managed-environment" errors)
+    - name: Tooling PATH + install Checkov (pipx)
       run: |
         echo "$HOME/.local/bin:$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-        python3 -m pip install --user --upgrade pip
-        python3 -m pip install --user checkov
+        if ! command -v pipx >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y python3-venv pipx
+          fi
+        fi
+        python3 -m pipx ensurepath || true
+        pipx install --force checkov
 
     - name: Run PR Pipeline
       run: make pull_request
@@ -71,13 +78,20 @@ jobs:
       with:
         go-version: '1.25.1'
 
-    # Ensure user-local and GOPATH bins are on PATH and Checkov is installed.
-    # This keeps the Makefile unchanged while fixing "checkov: No such file or directory"
-    - name: Tooling PATH + preinstall
+    # Ensure user-local and GOPATH bins are on PATH and install Checkov via pipx
+    # (avoids PEP 668 "externally-managed-environment" errors)
+    - name: Tooling PATH + install Checkov (pipx)
       run: |
         echo "$HOME/.local/bin:$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-        python3 -m pip install --user --upgrade pip
-        python3 -m pip install --user checkov
+        if ! command -v pipx >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y python3-venv pipx
+          fi
+        fi
+        python3 -m pipx ensurepath || true
+        pipx install --force checkov
 
     - name: Run Merge Pipeline
       run: make merge DOCKER_TAG=${{ github.sha }}

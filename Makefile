@@ -25,7 +25,7 @@ DOCKER_TAG ?= latest
 # Multi-arch platforms for Buildx
 PLATFORMS ?= linux/amd64,linux/arm64
 
-# Container registry (internal)
+# Container registry (internal, insecure is already configured on hosts)
 REGISTRY_HOST ?= docker-mirror.service.consul
 REGISTRY_PORT ?= 5000
 REGISTRY ?= $(REGISTRY_HOST):$(REGISTRY_PORT)
@@ -92,7 +92,7 @@ install-gotestsum:
 		go install gotest.tools/gotestsum@latest; \
 		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gotestsum installed"; \
 	else \
-		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gotestsum already installed"; \
+		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gottests sum already installed"; \
 	fi
 
 install-checkov:
@@ -269,14 +269,18 @@ docker-build:
 	docker build -t $(FULL_IMAGE):$(DOCKER_TAG) .
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Docker image built: $(FULL_IMAGE):$(DOCKER_TAG)"
 
-# Setup Buildx builder and enable qemu emulation (once per host)
+# Setup Buildx builder with HOST networking so BuildKit uses host DNS/resolver
 buildx-setup:
 	@echo "$(COLOR_CYAN)==> Ensuring Buildx builder is ready...$(COLOR_RESET)"
 	@docker buildx version >/dev/null 2>&1 || { echo "$(COLOR_RED)[ERR]$(COLOR_RESET) Docker Buildx is not available. Please upgrade Docker."; exit 1; }
 	@docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null 2>&1 || true
-	@docker buildx inspect multiarch-builder >/dev/null 2>&1 || docker buildx create --use --name multiarch-builder
-	@docker buildx use multiarch-builder
-	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Buildx builder: multiarch-builder"
+	@docker buildx rm -f multiarch-builder >/dev/null 2>&1 || true
+	@docker buildx create \
+		--name multiarch-builder \
+		--driver docker-container \
+		--driver-opt network=host \
+		--use
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Buildx builder: multiarch-builder (network=host)"
 
 # Build multi-arch image locally (no push)
 docker-buildx: buildx-setup
@@ -311,6 +315,9 @@ docker-scan-trivy-config: install-trivy
 	trivy config --quiet --file-patterns "dockerfile:Dockerfile" .
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Trivy config scan complete"
 
+# NOTE: This scans the single-arch image tagged $(DOCKER_TAG). In CI you can
+#       invoke docker-release first (which pushes manifest list), and optionally
+#       pull a specific arch image to scan separately if desired.
 docker-scan-trivy-image: docker-build install-trivy
 	@echo "$(COLOR_CYAN)==> Scanning Docker image with Trivy (CRITICAL)...$(COLOR_RESET)"
 	trivy image --quiet --severity CRITICAL $(FULL_IMAGE):$(DOCKER_TAG)
@@ -421,8 +428,8 @@ help:
 	@echo "  $(COLOR_BLUE)docker-run-tls$(COLOR_RESET)               - Run Docker container with TLS"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Docker:$(COLOR_RESET)"
-	@echo "  $(COLOR_BLUE)docker-build$(COLOR_RESET)                 - Build single-arch image:$(COLOR_RESET) tag=$(DOCKER_TAG)"
-	@echo "  $(COLOR_BLUE)buildx-setup$(COLOR_RESET)                 - Prepare Buildx for multi-arch builds"
+	@echo "  $(COLOR_BLUE)docker-build$(COLOR_RESET)                 - Build single-arch image (tag=$(DOCKER_TAG))"
+	@echo "  $(COLOR_BLUE)buildx-setup$(COLOR_RESET)                 - Prepare Buildx (host networking) for multi-arch builds"
 	@echo "  $(COLOR_BLUE)docker-buildx$(COLOR_RESET)                - Build multi-arch (no push)"
 	@echo "  $(COLOR_BLUE)docker-release$(COLOR_RESET)               - Build & PUSH multi-arch (tags: $(DOCKER_TAG), latest)"
 	@echo "  $(COLOR_BLUE)docker-scan-checkov$(COLOR_RESET)          - Scan Dockerfile with Checkov"
@@ -446,5 +453,5 @@ help:
 	@echo "  make docker-release DOCKER_TAG=v1.2.3"
 	@echo "  make docker-buildx PLATFORMS=linux/amd64,linux/arm64"
 	@echo "  make docker-run SERVICE=redis PORT=6379"
-	@echo "  make merge DOCKER_TAG=v$(shell date +%Y.%m.%d)-$$(git rev-parse --short HEAD)"
+	@echo "  make merge DOCKER_TAG=v$$(date +%Y.%m.%d)-$$(git rev-parse --short HEAD)"
 

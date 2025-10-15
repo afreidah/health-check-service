@@ -12,6 +12,8 @@
 # Build Stage
 # ------------------------------------------------------------------------------
 FROM golang:1.25.1-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
 
 # Install build dependencies
 RUN apk add --no-cache git make curl
@@ -23,7 +25,7 @@ WORKDIR /build
 COPY . .
 
 # Build using Makefile (handles deps + build)
-RUN make build
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make build
 
 # Verify binary was created
 RUN test -f bin/health-checker || (echo "Binary not found!" && exit 1)

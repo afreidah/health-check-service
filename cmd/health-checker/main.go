@@ -60,6 +60,14 @@ func main() {
 		log.Fatalf("Configuration error: %v", err)
 	}
 
+	// Print banner
+	log.Printf("==========================================")
+	log.Printf("Health Check Service Starting")
+	log.Printf("Service: %s | Port: %d | Interval: %ds",
+		cfg.Service, cfg.Port, cfg.Interval)
+	log.Printf("TLS: %t | Autocert: %t", cfg.TLSEnabled, cfg.TLSAutocert)
+	log.Printf("==========================================")
+
 	// Establish connection to system D-Bus for communicating with systemd
 	ctx := context.Background()
 	conn, err := dbus.NewSystemConnectionContext(ctx)

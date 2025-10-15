@@ -72,6 +72,14 @@ func (c *ServiceCache) IsStale(maxAge time.Duration) bool {
 	return time.Since(c.lastChecked) > maxAge
 }
 
+// SetLastChecked manually sets the lastChecked time for testing purposes.
+// This is exported specifically to allow testing of staleness detection.
+func (c *ServiceCache) SetLastChecked(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastChecked = t
+}
+
 // -----------------------------------------------------------------------------
 // Constructor
 // -----------------------------------------------------------------------------

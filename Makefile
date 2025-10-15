@@ -24,6 +24,8 @@ DOCKER_TAG ?= latest
 
 # Multi-arch platforms for Buildx
 PLATFORMS ?= linux/amd64,linux/arm64
+ARCH_AMD  := linux/amd64
+ARCH_ARM  := linux/arm64
 
 # Container registry (internal, insecure is already configured on hosts)
 REGISTRY_HOST ?= docker-mirror.service.consul
@@ -32,6 +34,12 @@ REGISTRY ?= $(REGISTRY_HOST):$(REGISTRY_PORT)
 
 # Full image name with registry
 FULL_IMAGE := $(REGISTRY)/$(DOCKER_IMAGE)
+
+# Arch-tagged names for daemon push + manifest assembly
+IMG_AMD := $(FULL_IMAGE):$(DOCKER_TAG)-amd64
+IMG_ARM := $(FULL_IMAGE):$(DOCKER_TAG)-arm64
+IMG_LATEST_AMD := $(FULL_IMAGE):latest-amd64
+IMG_LATEST_ARM := $(FULL_IMAGE):latest-arm64
 
 # Go commands
 GOCMD := go
@@ -50,13 +58,13 @@ COLOR_BLUE    := \033[0;34m
 COLOR_CYAN    := \033[0;36m
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
-	install-golangci-lint install-gotestsum install-checkov install-trivy \
-	test fmt lint lint-fix lint-verbose \
-	docker-build docker-buildx buildx-setup docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
-	docker-scan docker-tag docker-push docker-push-latest docker-run docker-compose-up docker-compose-down docker-clean \
-	docker-release \
-	generate-cert run-tls docker-run-tls clean-certs run-autocert docker-run-autocert \
-	pull_request merge help
+        install-golangci-lint install-gotestsum install-checkov install-trivy \
+        test fmt lint lint-fix lint-verbose \
+        docker-build docker-buildx buildx-setup docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
+        docker-scan docker-tag docker-push docker-push-latest docker-run docker-compose-up docker-compose-down docker-clean \
+        docker-release docker-release-daemon \
+        generate-cert run-tls docker-run-tls clean-certs run-autocert docker-run-autocert \
+        pull_request merge help
 
 # ------------------------------------------------------------------------------
 # Default Target
@@ -285,6 +293,7 @@ buildx-setup:
 		--driver-opt network=host \
 		--config .buildkit/buildkitd.toml \
 		--use
+	@docker buildx inspect --bootstrap >/dev/null
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Buildx builder: multiarch-builder (network=host, http/insecure for $(REGISTRY))"
 
 # Build multi-arch image locally (no push)
@@ -297,7 +306,7 @@ docker-buildx: buildx-setup
 		.
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Multi-arch build complete (loaded into local docker as host arch only)"
 
-# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest)
+# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
 docker-release: buildx-setup
 	@echo "$(COLOR_CYAN)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_CYAN)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
@@ -310,6 +319,30 @@ docker-release: buildx-setup
 		.
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and :latest"
 
+# Reliable path: build each arch, push via daemon, then assemble + push manifest
+docker-release-daemon: buildx-setup
+	@set -e; \
+	echo "$(COLOR_CYAN)==> Building $(ARCH_AMD) (--load) → $(IMG_AMD)$(COLOR_RESET)"; \
+	docker buildx build --platform $(ARCH_AMD) -t $(IMG_AMD) --load .; \
+	echo "$(COLOR_CYAN)==> Building $(ARCH_ARM) (--load) → $(IMG_ARM)$(COLOR_RESET)"; \
+	docker buildx build --platform $(ARCH_ARM) -t $(IMG_ARM) --load .; \
+	echo "$(COLOR_CYAN)==> Pushing arch images via Docker daemon...$(COLOR_RESET)"; \
+	docker push $(IMG_AMD); \
+	docker push $(IMG_ARM); \
+	echo "$(COLOR_CYAN)==> Creating multi-arch manifest: $(FULL_IMAGE):$(DOCKER_TAG)$(COLOR_RESET)"; \
+	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) $(IMG_AMD) $(IMG_ARM) >/dev/null; \
+	docker manifest annotate $(FULL_IMAGE):$(DOCKER_TAG) $(IMG_AMD) --arch amd64 >/dev/null; \
+	docker manifest annotate $(FULL_IMAGE):$(DOCKER_TAG) $(IMG_ARM) --arch arm64 >/dev/null; \
+	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG) >/dev/null; \
+	echo "$(COLOR_CYAN)==> Tagging + pushing :latest manifest...$(COLOR_RESET)"; \
+	docker tag $(IMG_AMD) $(IMG_LATEST_AMD); docker tag $(IMG_ARM) $(IMG_LATEST_ARM); \
+	docker push $(IMG_LATEST_AMD); docker push $(IMG_LATEST_ARM); \
+	docker manifest create $(FULL_IMAGE):latest $(IMG_LATEST_AMD) $(IMG_LATEST_ARM) >/dev/null; \
+	docker manifest annotate $(FULL_IMAGE):latest $(IMG_LATEST_AMD) --arch amd64 >/dev/null; \
+	docker manifest annotate $(FULL_IMAGE):latest $(IMG_LATEST_ARM) --arch arm64 >/dev/null; \
+	docker manifest push $(FULL_IMAGE):latest >/dev/null; \
+	echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Multi-arch manifests pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
+
 docker-scan-checkov: install-checkov
 	@echo "$(COLOR_CYAN)==> Scanning Dockerfile with Checkov...$(COLOR_RESET)"
 	checkov -f Dockerfile
@@ -320,9 +353,7 @@ docker-scan-trivy-config: install-trivy
 	trivy config --quiet --file-patterns "dockerfile:Dockerfile" .
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Trivy config scan complete"
 
-# NOTE: This scans the single-arch image tagged $(DOCKER_TAG). In CI you can
-#       invoke docker-release first (which pushes manifest list), and optionally
-#       pull a specific arch image to scan separately if desired.
+# NOTE: This scans the single-arch image tagged $(DOCKER_TAG).
 docker-scan-trivy-image: docker-build install-trivy
 	@echo "$(COLOR_CYAN)==> Scanning Docker image with Trivy (CRITICAL)...$(COLOR_RESET)"
 	trivy image --quiet --severity CRITICAL $(FULL_IMAGE):$(DOCKER_TAG)
@@ -380,7 +411,8 @@ pull_request: fmt lint test build docker-scan
 
 # For multi-arch publishing in CI:
 #   make merge DOCKER_TAG=v1.2.3
-merge: pull_request docker-release
+# Use the reliable daemon-push path by default
+merge: pull_request docker-release-daemon
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Merge pipeline complete - multi-arch image pushed to registry"
 
 # ------------------------------------------------------------------------------
@@ -436,7 +468,8 @@ help:
 	@echo "  $(COLOR_BLUE)docker-build$(COLOR_RESET)                 - Build single-arch image (tag=$(DOCKER_TAG))"
 	@echo "  $(COLOR_BLUE)buildx-setup$(COLOR_RESET)                 - Prepare Buildx (host networking + insecure HTTP registry)"
 	@echo "  $(COLOR_BLUE)docker-buildx$(COLOR_RESET)                - Build multi-arch (no push)"
-	@echo "  $(COLOR_BLUE)docker-release$(COLOR_RESET)               - Build & PUSH multi-arch (tags: $(DOCKER_TAG), latest)"
+	@echo "  $(COLOR_BLUE)docker-release$(COLOR_RESET)               - Build & PUSH multi-arch via Buildx (may fail on private registries)"
+	@echo "  $(COLOR_BLUE)docker-release-daemon$(COLOR_RESET)        - Build & PUSH multi-arch via daemon + manifest (reliable)"
 	@echo "  $(COLOR_BLUE)docker-scan-checkov$(COLOR_RESET)          - Scan Dockerfile with Checkov"
 	@echo "  $(COLOR_BLUE)docker-scan-trivy-config$(COLOR_RESET)     - Scan Docker config with Trivy"
 	@echo "  $(COLOR_BLUE)docker-scan-trivy-image$(COLOR_RESET)      - Scan built image with Trivy"
@@ -447,7 +480,7 @@ help:
 	@echo ""
 	@echo "$(COLOR_YELLOW)CI/CD:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)pull_request$(COLOR_RESET)                 - PR pipeline (fmt, lint, test, build, scans)"
-	@echo "  $(COLOR_BLUE)merge$(COLOR_RESET)                        - Multi-arch release (build/push tags)"
+	@echo "  $(COLOR_BLUE)merge$(COLOR_RESET)                        - Multi-arch release (daemon push + manifest)"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Cleanup:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)clean$(COLOR_RESET)                        - Remove build artifacts"
@@ -455,7 +488,8 @@ help:
 	@echo "  $(COLOR_BLUE)clean-certs$(COLOR_RESET)                  - Remove generated certificates"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Examples:$(COLOR_RESET)"
-	@echo "  make docker-release DOCKER_TAG=v1.2.3"
+	@echo "  make docker-release-daemon DOCKER_TAG=v1.2.3"
 	@echo "  make docker-buildx PLATFORMS=linux/amd64,linux/arm64"
 	@echo "  make docker-run SERVICE=redis PORT=6379"
 	@echo "  make merge DOCKER_TAG=v$$(date +%Y.%m.%d)-$$(git rev-parse --short HEAD)"
+

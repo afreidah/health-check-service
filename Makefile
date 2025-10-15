@@ -319,7 +319,7 @@ docker-release: buildx-setup
 		.
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and :latest"
 
-# Reliable path: build each arch, push via daemon, then assemble + push manifest
+# Reliable path: build each arch, push via daemon, then compose + push manifest via Buildx imagetools
 docker-release-daemon: buildx-setup
 	@set -e; \
 	echo "$(COLOR_CYAN)==> Building $(ARCH_AMD) (--load) → $(IMG_AMD)$(COLOR_RESET)"; \
@@ -329,18 +329,16 @@ docker-release-daemon: buildx-setup
 	echo "$(COLOR_CYAN)==> Pushing arch images via Docker daemon...$(COLOR_RESET)"; \
 	docker push $(IMG_AMD); \
 	docker push $(IMG_ARM); \
-	echo "$(COLOR_CYAN)==> Creating multi-arch manifest: $(FULL_IMAGE):$(DOCKER_TAG)$(COLOR_RESET)"; \
-	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) $(IMG_AMD) $(IMG_ARM) >/dev/null; \
-	docker manifest annotate $(FULL_IMAGE):$(DOCKER_TAG) $(IMG_AMD) --arch amd64 >/dev/null; \
-	docker manifest annotate $(FULL_IMAGE):$(DOCKER_TAG) $(IMG_ARM) --arch arm64 >/dev/null; \
-	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG) >/dev/null; \
-	echo "$(COLOR_CYAN)==> Tagging + pushing :latest manifest...$(COLOR_RESET)"; \
-	docker tag $(IMG_AMD) $(IMG_LATEST_AMD); docker tag $(IMG_ARM) $(IMG_LATEST_ARM); \
-	docker push $(IMG_LATEST_AMD); docker push $(IMG_LATEST_ARM); \
-	docker manifest create $(FULL_IMAGE):latest $(IMG_LATEST_AMD) $(IMG_LATEST_ARM) >/dev/null; \
-	docker manifest annotate $(FULL_IMAGE):latest $(IMG_LATEST_AMD) --arch amd64 >/dev/null; \
-	docker manifest annotate $(FULL_IMAGE):latest $(IMG_LATEST_ARM) --arch arm64 >/dev/null; \
-	docker manifest push $(FULL_IMAGE):latest >/dev/null; \
+	echo "$(COLOR_CYAN)==> Creating multi-arch manifest (Buildx imagetools) for :$(DOCKER_TAG)$(COLOR_RESET)"; \
+	BUILDX_REGISTRY_PLAINHTTP=1 docker buildx imagetools create \
+		--builder multiarch-builder \
+		--tag $(FULL_IMAGE):$(DOCKER_TAG) \
+		$(IMG_AMD) $(IMG_ARM); \
+	echo "$(COLOR_CYAN)==> Creating multi-arch manifest (Buildx imagetools) for :latest$(COLOR_RESET)"; \
+	BUILDX_REGISTRY_PLAINHTTP=1 docker buildx imagetools create \
+		--builder multiarch-builder \
+		--tag $(FULL_IMAGE):latest \
+		$(IMG_LATEST_AMD) $(IMG_LATEST_ARM); \
 	echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Multi-arch manifests pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
 
 docker-scan-checkov: install-checkov
@@ -469,7 +467,7 @@ help:
 	@echo "  $(COLOR_BLUE)buildx-setup$(COLOR_RESET)                 - Prepare Buildx (host networking + insecure HTTP registry)"
 	@echo "  $(COLOR_BLUE)docker-buildx$(COLOR_RESET)                - Build multi-arch (no push)"
 	@echo "  $(COLOR_BLUE)docker-release$(COLOR_RESET)               - Build & PUSH multi-arch via Buildx (may fail on private registries)"
-	@echo "  $(COLOR_BLUE)docker-release-daemon$(COLOR_RESET)        - Build & PUSH multi-arch via daemon + manifest (reliable)"
+	@echo "  $(COLOR_BLUE)docker-release-daemon$(COLOR_RESET)        - Build & PUSH multi-arch via daemon + imagetools (reliable)"
 	@echo "  $(COLOR_BLUE)docker-scan-checkov$(COLOR_RESET)          - Scan Dockerfile with Checkov"
 	@echo "  $(COLOR_BLUE)docker-scan-trivy-config$(COLOR_RESET)     - Scan Docker config with Trivy"
 	@echo "  $(COLOR_BLUE)docker-scan-trivy-image$(COLOR_RESET)      - Scan built image with Trivy"
@@ -480,7 +478,7 @@ help:
 	@echo ""
 	@echo "$(COLOR_YELLOW)CI/CD:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)pull_request$(COLOR_RESET)                 - PR pipeline (fmt, lint, test, build, scans)"
-	@echo "  $(COLOR_BLUE)merge$(COLOR_RESET)                        - Multi-arch release (daemon push + manifest)"
+	@echo "  $(COLOR_BLUE)merge$(COLOR_RESET)                        - Multi-arch release (daemon push + imagetools manifest)"
 	@echo ""
 	@echo "$(COLOR_YELLOW)Cleanup:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)clean$(COLOR_RESET)                        - Remove build artifacts"

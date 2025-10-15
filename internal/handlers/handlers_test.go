@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/afreidah/health-check-service/internal/cache"
 )
@@ -197,5 +198,58 @@ func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	// Wait for all requests to complete
 	for i := 0; i < 100; i++ {
 		<-done
+	}
+}
+
+// TestHealthHandlerStaleDataWarning verifies that the handler adds a Warning
+// header when the cached data is stale.
+func TestHealthHandlerStaleDataWarning(t *testing.T) {
+	c := cache.New()
+	c.UpdateStatus(http.StatusOK, "active")
+
+	// Set lastChecked to 35 seconds ago
+	c.SetLastChecked(time.Now().Add(-35 * time.Second))
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	HealthHandler(w, req, c)
+
+	warning := w.Header().Get("Warning")
+	if warning == "" {
+		t.Error("Expected Warning header for stale data, got none")
+	}
+
+	expectedWarning := "199 - Stale health check data"
+	if warning != expectedWarning {
+		t.Errorf("Expected Warning header '%s', got '%s'", expectedWarning, warning)
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+}
+
+// TestHealthHandlerFreshDataNoWarning verifies that fresh data does NOT
+// trigger a Warning header.
+func TestHealthHandlerFreshDataNoWarning(t *testing.T) {
+	c := cache.New()
+	c.UpdateStatus(http.StatusOK, "active")
+
+	// Check immediately - data should be fresh
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	HealthHandler(w, req, c)
+
+	// Should NOT have Warning header
+	warning := w.Header().Get("Warning")
+	if warning != "" {
+		t.Errorf("Expected no Warning header for fresh data, got '%s'", warning)
+	}
+
+	// Should return 200 OK
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
 }

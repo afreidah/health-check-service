@@ -199,6 +199,69 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestIsStale verifies the staleness detection works correctly.
+// The cache should report stale data when lastChecked is older than maxAge.
+func TestIsStale(t *testing.T) {
+	c := New()
+
+	// Update status to set lastChecked to now
+	c.UpdateStatus(http.StatusOK, "active")
+
+	// Immediately check - should NOT be stale
+	if c.IsStale(1 * time.Second) {
+		t.Error("Freshly updated cache should not be stale")
+	}
+
+	// Wait 100ms, check with 50ms threshold - should be stale
+	time.Sleep(100 * time.Millisecond)
+	if !c.IsStale(50 * time.Millisecond) {
+		t.Error("Cache should be stale after 100ms with 50ms threshold")
+	}
+
+	// Check with 200ms threshold - should NOT be stale
+	if c.IsStale(200 * time.Millisecond) {
+		t.Error("Cache should not be stale after 100ms with 200ms threshold")
+	}
+}
+
+// TestIsStaleWithNewCache verifies a brand new cache reports as stale.
+// A cache that has never been updated should be considered stale.
+func TestIsStaleWithNewCache(t *testing.T) {
+	c := New()
+
+	// Brand new cache should be stale (lastChecked is zero time)
+	if !c.IsStale(1 * time.Millisecond) {
+		t.Error("New cache with zero lastChecked should be stale")
+	}
+}
+
+// TestIsStaleConcurrentAccess verifies IsStale is thread-safe.
+// Multiple goroutines should be able to check staleness simultaneously
+// without race conditions.
+func TestIsStaleConcurrentAccess(t *testing.T) {
+	c := New()
+	c.UpdateStatus(http.StatusOK, "active")
+
+	done := make(chan bool, 10)
+
+	// 10 concurrent staleness checks
+	for i := 0; i < 10; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				c.IsStale(1 * time.Second)
+			}
+			done <- true
+		}()
+	}
+
+	// Wait for all to complete
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// If we got here without panicking, thread safety works
+}
+
 // -----------------------------------------------------------------------------
 // Immutability Tests
 // -----------------------------------------------------------------------------

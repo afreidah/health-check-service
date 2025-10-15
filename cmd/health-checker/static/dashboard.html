@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Check Dashboard</title>
+
+    <!-- Tailwind CSS for styling (like Bootstrap but better) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- React and ReactDOM from CDN (no npm needed!) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <!-- Babel to transform JSX in the browser (normally you'd compile this) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <!-- This is where React will render our app -->
+    <div id="root"></div>
+
+    <!-- Our React code goes in a script with type="text/babel" -->
+    <script type="text/babel">
+        // Import hooks from React (useState = state management, useEffect = side effects)
+        const { useState, useEffect } = React;
+
+        // Main Dashboard Component
+        // This is a function that returns JSX (HTML-like syntax)
+        function Dashboard() {
+            // STATE: Variables that cause re-renders when changed
+            // Think of it like: const [getter, setter] = useState(initialValue)
+            const [status, setStatus] = useState(null);  // Holds API response
+            const [loading, setLoading] = useState(true); // Is data loading?
+            const [error, setError] = useState(null);     // Any errors?
+            const [history, setHistory] = useState([]);   // Status history for chart
+            const [healthResponse, setHealthResponse] = useState(null); // Raw health endpoint response
+            const [metricsResponse, setMetricsResponse] = useState(null); // Raw metrics endpoint response
+
+            // EFFECT: Fetch data when component mounts and every 2 seconds
+            // This is like a cron job inside your component
+            useEffect(() => {
+                // Function to fetch status from our Go API
+                const fetchStatus = async () => {
+                    try {
+                        // Call our /api/status endpoint
+                        const response = await fetch('/api/status');
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+
+                        const data = await response.json();
+
+                        // Update state (this triggers a re-render)
+                        setStatus(data);
+                        setLoading(false);
+                        setError(null);
+
+                        // Add to history (keep last 20 checks)
+                        setHistory(prev => [...prev, {
+                            time: new Date(),
+                            healthy: data.healthy
+                        }].slice(-20));
+
+                    } catch (err) {
+                        setError(err.message);
+                        setLoading(false);
+                    }
+                };
+
+                // Fetch immediately
+                fetchStatus();
+
+                // Then fetch every 2 seconds
+                const interval = setInterval(fetchStatus, 2000);
+
+                // Cleanup function: runs when component unmounts
+                return () => clearInterval(interval);
+            }, []); // Empty dependency array = run once on mount
+
+            // Function to fetch and display raw health endpoint
+            const showHealthResponse = async () => {
+                try {
+                    const response = await fetch('/health');
+                    const data = await response.text();
+                    setHealthResponse({
+                        status: response.status,
+                        statusText: response.statusText,
+                        body: data
+                    });
+                    setMetricsResponse(null); // Hide metrics if showing
+                } catch (err) {
+                    setHealthResponse({
+                        status: 'Error',
+                        statusText: 'Failed to fetch',
+                        body: err.message
+                    });
+                }
+            };
+
+            // Function to fetch and display raw metrics endpoint
+            const showMetricsResponse = async () => {
+                try {
+                    const response = await fetch('/metrics');
+                    const data = await response.text();
+                    setMetricsResponse({
+                        status: response.status,
+                        statusText: response.statusText,
+                        body: data
+                    });
+                    setHealthResponse(null); // Hide health if showing
+                } catch (err) {
+                    setMetricsResponse({
+                        status: 'Error',
+                        statusText: 'Failed to fetch',
+                        body: err.message
+                    });
+                }
+            };
+
+            // RENDER: Loading state
+            if (loading) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen">
+                        <div className="text-2xl">Loading...</div>
+                    </div>
+                );
+            }
+
+            // RENDER: Error state
+            if (error) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen">
+                        <div className="bg-red-900 border border-red-700 rounded-lg p-8">
+                            <h2 className="text-2xl font-bold mb-2">Connection Error</h2>
+                            <p className="text-red-200">{error}</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            // RENDER: Main dashboard (when we have data)
+            return (
+                <div className="container mx-auto px-4 py-8">
+                    {/* Header */}
+                    <div className="mb-8">
+                        <h1 className="text-4xl font-bold mb-2">Health Check Dashboard</h1>
+                        <p className="text-gray-400">Real-time service monitoring</p>
+                    </div>
+
+                    {/* Main Status Card */}
+                    <div className={`rounded-lg p-8 mb-6 ${
+                        status.healthy
+                            ? 'bg-green-900 border-2 border-green-500'
+                            : 'bg-red-900 border-2 border-red-500'
+                    }`}>
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h2 className="text-2xl font-bold mb-2">
+                                    Service: {status.service}
+                                </h2>
+                                <div className="flex items-center gap-4">
+                                    <span className={`text-6xl ${
+                                        status.healthy ? 'text-green-400' : 'text-red-400'
+                                    }`}>
+                                        {status.healthy ? '✓' : '✗'}
+                                    </span>
+                                    <div>
+                                        <p className="text-3xl font-bold">
+                                            {status.status.toUpperCase()}
+                                        </p>
+                                        <p className="text-xl text-gray-300">
+                                            State: {status.state}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-sm text-gray-400">Status Code</p>
+                                <p className="text-4xl font-bold">{status.status_code}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Stats Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                        {/* Last Checked */}
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-1">Last Checked</p>
+                            <p className="text-2xl font-bold">
+                                {new Date(status.last_checked).toLocaleTimeString()}
+                            </p>
+                        </div>
+
+                        {/* Uptime */}
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-1">Uptime</p>
+                            <p className="text-2xl font-bold text-green-400">
+                                {status.uptime}%
+                            </p>
+                        </div>
+
+                        {/* Checks */}
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-1">Recent Checks</p>
+                            <p className="text-2xl font-bold">{history.length}</p>
+                        </div>
+                    </div>
+
+                    {/* Status History Chart (simple bar chart) */}
+                    <div className="bg-gray-800 rounded-lg p-6">
+                        <h3 className="text-xl font-bold mb-4">Status History</h3>
+                        <div className="flex items-end gap-1 h-32">
+                            {history.map((item, index) => (
+                                <div
+                                    key={index}
+                                    className={`flex-1 rounded-t transition-all ${
+                                        item.healthy ? 'bg-green-500' : 'bg-red-500'
+                                    }`}
+                                    style={{ height: item.healthy ? '100%' : '20%' }}
+                                    title={item.time.toLocaleTimeString()}
+                                />
+                            ))}
+                        </div>
+                        <div className="flex justify-between mt-2 text-xs text-gray-400">
+                            <span>Oldest</span>
+                            <span>Most Recent</span>
+                        </div>
+                    </div>
+
+                    {/* Buttons */}
+                    <div className="mt-8 flex gap-4">
+                        <button
+                            onClick={showHealthResponse}
+                            className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg font-semibold transition"
+                        >
+                            View Health Endpoint
+                        </button>
+                        <button
+                            onClick={showMetricsResponse}
+                            className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg font-semibold transition"
+                        >
+                            View Prometheus Metrics
+                        </button>
+                    </div>
+
+                    {/* Raw Health Response Display */}
+                    {healthResponse && (
+                        <div className="mt-6 bg-gray-800 rounded-lg p-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-xl font-bold">Health Endpoint Response</h3>
+                                <button
+                                    onClick={() => setHealthResponse(null)}
+                                    className="text-gray-400 hover:text-white text-2xl"
+                                >
+                                    ×
+                                </button>
+                            </div>
+                            <div className="mb-2">
+                                <span className={`inline-block px-3 py-1 rounded text-sm font-semibold ${
+                                    healthResponse.status >= 200 && healthResponse.status < 300
+                                        ? 'bg-green-600'
+                                        : healthResponse.status >= 500
+                                        ? 'bg-red-600'
+                                        : 'bg-yellow-600'
+                                }`}>
+                                    HTTP {healthResponse.status} {healthResponse.statusText}
+                                </span>
+                            </div>
+                            <pre className="bg-gray-900 p-4 rounded overflow-x-auto text-sm text-gray-300">
+{healthResponse.body}
+                            </pre>
+                        </div>
+                    )}
+
+                    {/* Raw Metrics Response Display */}
+                    {metricsResponse && (
+                        <div className="mt-6 bg-gray-800 rounded-lg p-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-xl font-bold">Prometheus Metrics Response</h3>
+                                <button
+                                    onClick={() => setMetricsResponse(null)}
+                                    className="text-gray-400 hover:text-white text-2xl"
+                                >
+                                    ×
+                                </button>
+                            </div>
+                            <div className="mb-2">
+                                <span className={`inline-block px-3 py-1 rounded text-sm font-semibold ${
+                                    metricsResponse.status >= 200 && metricsResponse.status < 300
+                                        ? 'bg-green-600'
+                                        : 'bg-red-600'
+                                }`}>
+                                    HTTP {metricsResponse.status} {metricsResponse.statusText}
+                                </span>
+                            </div>
+                            <pre className="bg-gray-900 p-4 rounded overflow-x-auto text-sm text-gray-300">
+{metricsResponse.body}
+                            </pre>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Render the Dashboard component into the #root div
+        // This is like "start the React app"
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<Dashboard />);
+    </script>
+</body>
+</html>

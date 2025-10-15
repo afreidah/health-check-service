@@ -17,19 +17,11 @@
 job "health-checker" {
   region      = "global"
   datacenters = ["pi-dc"]
-  node_pool   = "core"
+  node_pool   = "all"
   type        = "service"
 
   group "app" {
     count = 1
-
-    # Ensure this job runs where the k3s process is running
-    constraint {
-      attribute = "${node.unique.name}"
-      operator  = "="
-      value     = "mccoy"
-    }
-
 
     # --------------------------------------------------------------------------
     # Networking — publish container :8080 to node :18080 (static)
@@ -37,7 +29,6 @@ job "health-checker" {
     # --------------------------------------------------------------------------
     network {
       port "http" {
-        to     = 8080
         static = 18080
       }
     }
@@ -49,7 +40,7 @@ job "health-checker" {
         image = "docker-mirror.service.consul:5000/health-checker"
         ports = ["http"]
         volumes = [
-          "/var/run/dbus:/var/run/dbus"
+          "/var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro"
         ]
 
         # Container logging via journald
@@ -61,7 +52,7 @@ job "health-checker" {
         }
 
         # Override ENTRYPOINT/CMD
-        args = ["--service", "k3s", "--port", "8080", "--interval", "10"]
+        args = ["--service", "k3s", "--port", "18080", "--interval", "10"]
       }
 
       # ------------------------------------------------------------------------

@@ -328,19 +328,19 @@ docker-release-daemon: buildx-setup
 	docker push $(IMG_AMD); \
 	docker push $(IMG_ARM); \
 	echo "$(COLOR_INFO)==> Creating multi-arch manifest (Docker CLI) for :$(DOCKER_TAG)$(COLOR_RESET)"; \
-	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) \
+	docker manifest create --insecure $(FULL_IMAGE):$(DOCKER_TAG) \
 		--amend $(IMG_AMD) \
 		--amend $(IMG_ARM); \
-	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG); \
+	docker manifest push --insecure $(FULL_IMAGE):$(DOCKER_TAG); \
 	echo "$(COLOR_INFO)==> Tagging and pushing :latest manifest$(COLOR_RESET)"; \
 	docker tag $(IMG_AMD) $(IMG_LATEST_AMD); \
 	docker tag $(IMG_ARM) $(IMG_LATEST_ARM); \
 	docker push $(IMG_LATEST_AMD); \
 	docker push $(IMG_LATEST_ARM); \
-	docker manifest create $(FULL_IMAGE):latest \
+	docker manifest create --insecure $(FULL_IMAGE):latest \
 		--amend $(IMG_LATEST_AMD) \
 		--amend $(IMG_LATEST_ARM); \
-	docker manifest push $(FULL_IMAGE):latest; \
+	docker manifest push --insecure $(FULL_IMAGE):latest; \
 	echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch manifests pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
 
 docker-scan-checkov: install-checkov

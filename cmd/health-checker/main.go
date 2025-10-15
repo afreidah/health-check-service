@@ -96,12 +96,6 @@ func main() {
 	// -------------------------------------------------------------------------
 	serviceCache := cache.New()
 
-	// Dashboard route - serves embedded HTML
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(dashboardHTML)
-	})
-
 	// Health endpoint - returns service status with appropriate HTTP code
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		handlers.HealthHandler(w, r, serviceCache)
@@ -110,6 +104,14 @@ func main() {
 	// Status API - returns JSON status for dashboard
 	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service)
+	})
+
+	// Dashboard route - serves embedded HTML
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if _, err := w.Write(dashboardHTML); err != nil {
+			log.Printf("Error writing dashboard: %v", err)
+		}
 	})
 
 	// Prometheus metrics endpoint

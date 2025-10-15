@@ -8,10 +8,6 @@
 # - Registers a Nomad service with Traefik labels for INTERNAL access only:
 #     * Host: health.munchbox
 #     * EntryPoint: websecure (TLS), LAN-only middleware.
-#
-# Why this change?
-# - Removes all public routers and .alexfreidah.com hosts. Keeps only the
-#   internal *.munchbox router, plus Traefik service + healthcheck labels.
 # ------------------------------------------------------------------------------
 
 job "health-checker" {
@@ -56,7 +52,7 @@ job "health-checker" {
       }
 
       # ------------------------------------------------------------------------
-      # Resources — adjust based on real usage
+      # Resources 
       # ------------------------------------------------------------------------
       resources {
         cpu    = 200
@@ -108,7 +104,7 @@ job "health-checker" {
       }
 
       # ------------------------------------------------------------------------
-      # Restart policy — keep the service healthy
+      # Restart policy 
       # ------------------------------------------------------------------------
       restart {
         attempts = 2

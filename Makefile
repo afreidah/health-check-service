@@ -137,13 +137,13 @@ run: build
 	@echo "$(COLOR_INFO)==> Running $(BINARY_NAME)...$(COLOR_RESET)"
 	@echo "$(COLOR_WARN)Note: Set SERVICE=<name> to monitor a different service$(COLOR_RESET)"
 	./$(BUILD_DIR)/$(BINARY_NAME) \
-		--service $${SERVICE:-nginx} \
+		--service $${SERVICE:-cron} \
 		--port $${PORT:-8080} \
 		--interval $${INTERVAL:-10}
 
 run-env: build
 	@echo "$(COLOR_INFO)==> Running $(BINARY_NAME) with environment variables...$(COLOR_RESET)"
-	HEALTH_SERVICE=$${SERVICE:-nginx} \
+	HEALTH_SERVICE=$${SERVICE:-cron} \
 	HEALTH_PORT=$${PORT:-8181} \
 	HEALTH_INTERVAL=$${INTERVAL:-7} \
 	./$(BUILD_DIR)/$(BINARY_NAME)
@@ -153,7 +153,7 @@ run-config: build
 	@if [ ! -f "config.yaml" ]; then \
 		echo "$(COLOR_WARN)[WARN]$(COLOR_RESET) config.yaml not found, creating example..."; \
 		echo "port: 8080" > config.yaml; \
-		echo "service: nginx" >> config.yaml; \
+		echo "service: cron" >> config.yaml; \
 		echo "interval: 10" >> config.yaml; \
 	fi
 	./$(BUILD_DIR)/$(BINARY_NAME) --config config.yaml
@@ -202,7 +202,7 @@ run-tls: build generate-cert
 	@echo "$(COLOR_INFO)==> Running $(BINARY_NAME) with TLS enabled...$(COLOR_RESET)"
 	@echo "$(COLOR_WARN)Note: Using self-signed certificate$(COLOR_RESET)"
 	./$(BUILD_DIR)/$(BINARY_NAME) \
-		--service $${SERVICE:-nginx} \
+		--service $${SERVICE:-cron} \
 		--port $${PORT:-8443} \
 		--interval $${INTERVAL:-10} \
 		--tls_enabled \
@@ -215,7 +215,7 @@ run-autocert: build
 	@if [ -z "$${HEALTH_TLS_AUTOCERT_DOMAIN}" ]; then \
 		echo "$(COLOR_WARN)[ERR]$(COLOR_RESET) Set HEALTH_TLS_AUTOCERT_DOMAIN=alexfreidah.com"; exit 1; \
 	fi
-	HEALTH_SERVICE=$${HEALTH_SERVICE:-nginx} \
+	HEALTH_SERVICE=$${HEALTH_SERVICE:-cron} \
 	HEALTH_PORT=443 \
 	HEALTH_INTERVAL=$${HEALTH_INTERVAL:-10} \
 	HEALTH_TLS_AUTOCERT=true \
@@ -232,7 +232,7 @@ docker-run-tls: docker-build generate-cert
 		-v $(PWD)/certs:/app/certs:ro \
 		--network host \
 		$(FULL_IMAGE):$(DOCKER_TAG) \
-		--service $${SERVICE:-nginx} \
+		--service $${SERVICE:-cron} \
 		--port $${PORT:-8443} \
 		--interval $${INTERVAL:-10} \
 		--tls_enabled \
@@ -251,7 +251,7 @@ docker-run-autocert: docker-build
 		--cap-add=NET_BIND_SERVICE \
 		-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
 		-v $${HEALTH_TLS_AUTOCERT_CACHE:-$(PWD)/acme-cache}:/var/cache/health-checker \
-		-e HEALTH_SERVICE=$${HEALTH_SERVICE:-nginx} \
+		-e HEALTH_SERVICE=$${HEALTH_SERVICE:-cron} \
 		-e HEALTH_PORT=443 \
 		-e HEALTH_INTERVAL=$${HEALTH_INTERVAL:-10} \
 		-e HEALTH_TLS_AUTOCERT=true \
@@ -380,7 +380,7 @@ docker-run: docker-build
 		-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
 		--network host \
 		$(FULL_IMAGE):$(DOCKER_TAG) \
-		--service $${SERVICE:-nginx} \
+		--service $${SERVICE:-cron} \
 		--port $${PORT:-8080} \
 		--interval $${INTERVAL:-10}
 

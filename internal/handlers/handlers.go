@@ -28,6 +28,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -93,4 +94,88 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceC
 	// Return only the status code with no body
 	// Monitoring systems typically only check the HTTP status
 	w.WriteHeader(statusCode)
+}
+
+// -----------------------------------------------------------------------------
+// Status API Response Types
+// -----------------------------------------------------------------------------
+
+// StatusResponse represents the JSON response for the dashboard API.
+// This provides all the information the React dashboard needs to display
+// the current service health status.
+type StatusResponse struct {
+	Service     string    `json:"service"`      // Name of the monitored service
+	Status      string    `json:"status"`       // Human-readable status (healthy/unhealthy/error)
+	State       string    `json:"state"`        // Systemd state (active/inactive/failed)
+	StatusCode  int       `json:"status_code"`  // HTTP status code (200/503/500)
+	LastChecked time.Time `json:"last_checked"` // When the status was last updated
+	Uptime      float64   `json:"uptime"`       // Uptime percentage (placeholder for now)
+	Healthy     bool      `json:"healthy"`      // Simple boolean for UI
+}
+
+// -----------------------------------------------------------------------------
+// Status API Handler
+// -----------------------------------------------------------------------------
+
+// StatusAPIHandler serves the /api/status endpoint for the dashboard.
+// Returns JSON with current service health status.
+//
+// This is different from /health which returns only HTTP status codes.
+// This endpoint provides detailed information for the dashboard UI.
+//
+// Response format:
+//
+//	{
+//	  "service": "nginx",
+//	  "status": "healthy",
+//	  "state": "active",
+//	  "status_code": 200,
+//	  "last_checked": "2025-10-15T12:34:56Z",
+//	  "uptime": 99.9,
+//	  "healthy": true
+//	}
+func StatusAPIHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceCache, serviceName string) {
+	// Only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get current status from cache
+	statusCode, state := cache.GetStatus()
+
+	// Build response
+	response := StatusResponse{
+		Service:    serviceName,
+		State:      state,
+		StatusCode: statusCode,
+		Healthy:    statusCode == http.StatusOK,
+		Uptime:     99.9, // TODO: Calculate actual uptime from metrics
+	}
+
+	// Map status code to human-readable status
+	switch statusCode {
+	case http.StatusOK:
+		response.Status = "healthy"
+	case http.StatusServiceUnavailable:
+		response.Status = "unhealthy"
+	case http.StatusInternalServerError:
+		response.Status = "error"
+	default:
+		response.Status = "unknown"
+	}
+
+	// Get last checked time
+	response.LastChecked = cache.GetLastChecked()
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*") // Allow CORS for development
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding status response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 }

@@ -305,20 +305,6 @@ docker-buildx: buildx-setup
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch build complete (loaded into local docker as host arch only)"
 
 # Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
-# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
-docker-release: buildx-setup
-	@echo "$(COLOR_INFO)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
-	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
-	@echo "$(COLOR_INFO)     Tags : $(DOCKER_TAG), latest$(COLOR_RESET)"
-	docker buildx build \
-		--platform $(PLATFORMS) \
-		--tag $(FULL_IMAGE):$(DOCKER_TAG) \
-		--tag $(FULL_IMAGE):latest \
-		--push \
-		.
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and :latest"
-
-# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
 docker-release: buildx-setup
 	@echo "$(COLOR_INFO)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"

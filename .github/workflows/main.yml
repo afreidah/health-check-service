@@ -55,7 +55,8 @@ jobs:
         pipx install --force checkov
 
     - name: Run PR Pipeline
-      run: make pull_request
+      #run: make pull_request
+      run: make merge
 
     - name: PR Check Summary
       if: always()

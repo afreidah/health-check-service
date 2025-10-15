@@ -80,6 +80,14 @@ func (c *ServiceCache) SetLastChecked(t time.Time) {
 	c.lastChecked = t
 }
 
+// GetLastChecked returns the timestamp of the last status update.
+// Used by the dashboard to show when the service was last checked.
+func (c *ServiceCache) GetLastChecked() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastChecked
+}
+
 // -----------------------------------------------------------------------------
 // Constructor
 // -----------------------------------------------------------------------------

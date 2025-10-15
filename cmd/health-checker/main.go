@@ -40,6 +40,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "embed"
+
 	"github.com/afreidah/health-check-service/internal/cache"
 	"github.com/afreidah/health-check-service/internal/checker"
 	"github.com/afreidah/health-check-service/internal/config"
@@ -48,6 +50,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme/autocert"
 )
+
+//go:embed static/dashboard.html
+var dashboardHTML []byte
 
 func main() {
 	// -------------------------------------------------------------------------
@@ -91,9 +96,23 @@ func main() {
 	// -------------------------------------------------------------------------
 	serviceCache := cache.New()
 
+	// Dashboard route - serves embedded HTML
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(dashboardHTML)
+	})
+
+	// Health endpoint - returns service status with appropriate HTTP code
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		handlers.HealthHandler(w, r, serviceCache)
 	})
+
+	// Status API - returns JSON status for dashboard
+	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service)
+	})
+
+	// Prometheus metrics endpoint
 	http.Handle("/metrics", promhttp.Handler())
 
 	srv := &http.Server{

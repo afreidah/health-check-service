@@ -79,6 +79,21 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
+
+	// CheckFailures counts failed health check attempts by error type.
+	// Labels: service (service name), error_type (dbus_error, type_error)
+	//
+	// Use Case: Distinguish infrastructure failures from code issues
+	// Example Queries:
+	//   - rate(health_check_failures_total[5m])  # Failure rate
+	//   - sum(health_check_failures_total{error_type="dbus_error"})  # D-Bus issues
+	CheckFailures = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_check_failures_total",
+			Help: "Total number of failed health checks by error type",
+		},
+		[]string{"service", "error_type"},
+	)
 )
 
 // -----------------------------------------------------------------------------
@@ -97,4 +112,5 @@ func init() {
 	prometheus.MustRegister(RequestsTotal)
 	prometheus.MustRegister(ServiceStatus)
 	prometheus.MustRegister(RequestDuration)
+	prometheus.MustRegister(CheckFailures)
 }

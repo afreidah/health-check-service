@@ -82,6 +82,11 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceC
 	statusCode, status := cache.GetStatus()
 	log.Printf("Current status: %s", status)
 
+	// Add staleness warning
+	if cache.IsStale(30 * time.Second) {
+		w.Header().Set("Warning", "199 - Stale health check data")
+	}
+
 	// -------------------------------------------------------------------------
 	// Send HTTP Response
 	// -------------------------------------------------------------------------

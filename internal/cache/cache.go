@@ -64,6 +64,14 @@ func (c *ServiceCache) UpdateStatus(code int, state string) {
 	c.lastChecked = time.Now()
 }
 
+// IsStale checks if the lastChecked time in the cache is larger
+// then the set interval that cache updates should be happening at
+func (c *ServiceCache) IsStale(maxAge time.Duration) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return time.Since(c.lastChecked) > maxAge
+}
+
 // -----------------------------------------------------------------------------
 // Constructor
 // -----------------------------------------------------------------------------

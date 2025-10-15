@@ -240,7 +240,8 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	if err != nil {
 		log.Printf("Error checking service %s: %v", service, err)
 		cache.UpdateStatus(http.StatusInternalServerError, "error")
-		return err // Return error to trigger reconnection
+		metrics.CheckFailures.WithLabelValues(service, "dbus_error").Inc()
+		return err
 	}
 
 	// Extract the ActiveState value from D-Bus variant type
@@ -248,6 +249,7 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	if !ok {
 		log.Printf("Unexpected type for ActiveState")
 		cache.UpdateStatus(http.StatusInternalServerError, "type_error")
+		metrics.CheckFailures.WithLabelValues(service, "type_error").Inc()
 		return err // Return error to trigger reconnection
 	}
 

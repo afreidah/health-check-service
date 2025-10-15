@@ -174,6 +174,7 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 	}
 
 	// Reconnection loop with exponential backoff
+	attemptNum := 1
 	retryDelay := initialRetryDelay
 	for {
 		select {
@@ -195,7 +196,8 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 			}
 
 			// Reconnection failed, wait before retry
-			log.Printf("D-Bus reconnection failed, retrying in %v: %v", retryDelay, err)
+			log.Printf("[Attempt %d] D-Bus reconnection failed, retrying in %v: %v",
+				attemptNum, retryDelay, err)
 
 			select {
 			case <-time.After(retryDelay):
@@ -203,6 +205,7 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 				retryDelay *= backoffMultiplier
 				if retryDelay > maxRetryDelay {
 					retryDelay = maxRetryDelay
+					attemptNum++
 				}
 			case <-ctx.Done():
 				// Shutdown during backoff wait

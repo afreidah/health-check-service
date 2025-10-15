@@ -1,0 +1,130 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-checker
+  namespace: infra
+  labels:
+    app: health-checker
+spec:
+  # Ensure only one pod at a time (important with hostPort to avoid conflicts)
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+  replicas: 1
+  selector:
+    matchLabels:
+      app: health-checker
+  template:
+    metadata:
+      labels:
+        app: health-checker
+    spec:
+      # Pod-level security context: run non-root (uid/gid 1000) and join host messagebus group (gid 106)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        supplementalGroups: [106]  # messagebus GID from host (getent group messagebus)
+
+      containers:
+        - name: health-checker
+          # Your internal, insecure registry image (multi-arch manifest pushed via Buildx)
+          image: docker-mirror.service.consul:5000/health-checker:3833c0e95019c3ba8d3e815c7048da596dced439-arm64
+          imagePullPolicy: IfNotPresent
+          # service=k3s and port=18081
+          args: ["--service", "k3s", "--port", "18081", "--interval", "10"]
+          ports:
+            - containerPort: 18081
+              hostPort: 18081        # expose container port on the node so you can curl http://<node-ip>:18081/health
+              name: http
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: dbus-socket
+              mountPath: /var/run/dbus/system_bus_socket
+              readOnly: true
+
+      volumes:
+        # HostPath mount to mirror `-v /var/run/dbus/system_bus_socket:...`
+        - name: dbus-socket
+          hostPath:
+            path: /var/run/dbus/system_bus_socket
+            type: Socket
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-checker
+  namespace: infra
+  labels:
+    app: health-checker
+spec:
+  selector:
+    app: health-checker
+  ports:
+    - name: http
+      port: 18081        # ClusterIP service port
+      targetPort: http   # -> container port name
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: health-checker
+  namespace: infra
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # If you use a Traefik CRD middleware for LAN allowlist, reference it like:
+    # traefik.ingress.kubernetes.io/router.middlewares: infra-lan-allowlist@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: health.munchbox
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: health-checker
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - health.munchbox
+

@@ -305,6 +305,7 @@ docker-buildx: buildx-setup
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch build complete (loaded into local docker as host arch only)"
 
 # Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
+# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
 docker-release: buildx-setup
 	@echo "$(COLOR_INFO)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
@@ -317,7 +318,7 @@ docker-release: buildx-setup
 		.
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and :latest"
 
-# Reliable path: build each arch, push via daemon, then compose + push manifest via Docker CLI
+# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
 docker-release: buildx-setup
 	@echo "$(COLOR_INFO)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
@@ -340,21 +341,26 @@ docker-release-daemon: buildx-setup
 	echo "$(COLOR_INFO)==> Pushing arch images via Docker daemon...$(COLOR_RESET)"; \
 	docker push $(IMG_AMD); \
 	docker push $(IMG_ARM); \
+	echo "$(COLOR_INFO)==> Pulling images back for manifest creation...$(COLOR_RESET)"; \
+	docker pull $(IMG_AMD); \
+	docker pull $(IMG_ARM); \
 	echo "$(COLOR_INFO)==> Creating multi-arch manifest for :$(DOCKER_TAG)$(COLOR_RESET)"; \
 	docker manifest rm $(FULL_IMAGE):$(DOCKER_TAG) 2>/dev/null || true; \
 	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) \
-		--amend $(IMG_AMD) \
-		--amend $(IMG_ARM); \
+		$(IMG_AMD) \
+		$(IMG_ARM); \
 	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG); \
 	echo "$(COLOR_INFO)==> Creating multi-arch manifest for :latest$(COLOR_RESET)"; \
 	docker tag $(IMG_AMD) $(IMG_LATEST_AMD); \
 	docker tag $(IMG_ARM) $(IMG_LATEST_ARM); \
 	docker push $(IMG_LATEST_AMD); \
 	docker push $(IMG_LATEST_ARM); \
+	docker pull $(IMG_LATEST_AMD); \
+	docker pull $(IMG_LATEST_ARM); \
 	docker manifest rm $(FULL_IMAGE):latest 2>/dev/null || true; \
 	docker manifest create $(FULL_IMAGE):latest \
-		--amend $(IMG_LATEST_AMD) \
-		--amend $(IMG_LATEST_ARM); \
+		$(IMG_LATEST_AMD) \
+		$(IMG_LATEST_ARM); \
 	docker manifest push $(FULL_IMAGE):latest; \
 	echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch manifests pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
 

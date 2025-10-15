@@ -92,7 +92,7 @@ install-gotestsum:
 		go install gotest.tools/gotestsum@latest; \
 		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gotestsum installed"; \
 	else \
-		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gottests sum already installed"; \
+		echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) gotestsum already installed"; \
 	fi
 
 install-checkov:
@@ -269,18 +269,23 @@ docker-build:
 	docker build -t $(FULL_IMAGE):$(DOCKER_TAG) .
 	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Docker image built: $(FULL_IMAGE):$(DOCKER_TAG)"
 
-# Setup Buildx builder with HOST networking so BuildKit uses host DNS/resolver
+# Setup Buildx builder with HOST networking and a BuildKit config that forces HTTP/insecure
 buildx-setup:
-	@echo "$(COLOR_CYAN)==> Ensuring Buildx builder is ready...$(COLOR_RESET)"
+	@echo "$(COLOR_CYAN)==> Ensuring Buildx builder is ready (host DNS + HTTP registry)...$(COLOR_RESET)"
 	@docker buildx version >/dev/null 2>&1 || { echo "$(COLOR_RED)[ERR]$(COLOR_RESET) Docker Buildx is not available. Please upgrade Docker."; exit 1; }
 	@docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null 2>&1 || true
+	@mkdir -p .buildkit
+	@echo "[registry.\"$(REGISTRY)\"]"                > .buildkit/buildkitd.toml
+	@echo "  http = true"                            >> .buildkit/buildkitd.toml
+	@echo "  insecure = true"                        >> .buildkit/buildkitd.toml
 	@docker buildx rm -f multiarch-builder >/dev/null 2>&1 || true
 	@docker buildx create \
 		--name multiarch-builder \
 		--driver docker-container \
 		--driver-opt network=host \
+		--config .buildkit/buildkitd.toml \
 		--use
-	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Buildx builder: multiarch-builder (network=host)"
+	@echo "$(COLOR_GREEN)[OK]$(COLOR_RESET) Buildx builder: multiarch-builder (network=host, http/insecure for $(REGISTRY))"
 
 # Build multi-arch image locally (no push)
 docker-buildx: buildx-setup
@@ -294,7 +299,7 @@ docker-buildx: buildx-setup
 
 # Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest)
 docker-release: buildx-setup
-	@echo "$(COLOR_CYAN)==> Building & pushing MULTI-ARCH image...$(COLOR_RESET)"
+	@echo "$(COLOR_CYAN)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_CYAN)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
 	@echo "$(COLOR_CYAN)     Tags : $(DOCKER_TAG), latest$(COLOR_RESET)"
 	docker buildx build \
@@ -429,7 +434,7 @@ help:
 	@echo ""
 	@echo "$(COLOR_YELLOW)Docker:$(COLOR_RESET)"
 	@echo "  $(COLOR_BLUE)docker-build$(COLOR_RESET)                 - Build single-arch image (tag=$(DOCKER_TAG))"
-	@echo "  $(COLOR_BLUE)buildx-setup$(COLOR_RESET)                 - Prepare Buildx (host networking) for multi-arch builds"
+	@echo "  $(COLOR_BLUE)buildx-setup$(COLOR_RESET)                 - Prepare Buildx (host networking + insecure HTTP registry)"
 	@echo "  $(COLOR_BLUE)docker-buildx$(COLOR_RESET)                - Build multi-arch (no push)"
 	@echo "  $(COLOR_BLUE)docker-release$(COLOR_RESET)               - Build & PUSH multi-arch (tags: $(DOCKER_TAG), latest)"
 	@echo "  $(COLOR_BLUE)docker-scan-checkov$(COLOR_RESET)          - Scan Dockerfile with Checkov"
@@ -454,4 +459,3 @@ help:
 	@echo "  make docker-buildx PLATFORMS=linux/amd64,linux/arm64"
 	@echo "  make docker-run SERVICE=redis PORT=6379"
 	@echo "  make merge DOCKER_TAG=v$$(date +%Y.%m.%d)-$$(git rev-parse --short HEAD)"
-

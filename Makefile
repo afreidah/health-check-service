@@ -65,7 +65,7 @@ COLOR_WARN  := \033[0;33m
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
         test fmt lint lint-fix lint-verbose vet vuln \
-        docker-build buildx-ensure docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
+        docker-build buildx-ensure buildx-reset docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
         docker-scan docker-tag docker-push docker-push-latest docker-run \
         docker-clean docker-release \
         generate-cert run-tls docker-run-tls clean-certs run-autocert docker-run-autocert \
@@ -263,22 +263,24 @@ docker-build:
 # Ensure buildx builder is ready for multi-platform builds with insecure registry config
 buildx-ensure:
 	@docker buildx version >/dev/null 2>&1 || { echo "$(COLOR_WARN)[ERR]$(COLOR_RESET) Docker Buildx is not available. Please upgrade Docker."; exit 1; }
-	@docker buildx inspect multiarch-builder >/dev/null 2>&1 || { \
-		echo "$(COLOR_INFO)==> Creating multiarch-builder for multi-platform builds...$(COLOR_RESET)"; \
-		mkdir -p .buildkit; \
-		echo "[registry.\"$(REGISTRY)\"]" > .buildkit/buildkitd.toml; \
-		echo "  http = true" >> .buildkit/buildkitd.toml; \
-		echo "  insecure = true" >> .buildkit/buildkitd.toml; \
-		docker buildx create \
-			--name multiarch-builder \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .buildkit/buildkitd.toml \
-			--use; \
-		docker buildx inspect --bootstrap multiarch-builder >/dev/null; \
-		echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created (network=host, HTTP insecure for $(REGISTRY))"; \
-	}
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Using builder: multiarch-builder"
+	@docker buildx inspect multiarch-builder >/dev/null 2>&1 && { echo "$(COLOR_OK)[OK]$(COLOR_RESET) Using existing builder: multiarch-builder"; exit 0; } || true
+	@echo "$(COLOR_INFO)==> Creating multiarch-builder for multi-platform builds...$(COLOR_RESET)"
+	@mkdir -p .buildkit
+	@echo '[registry."$(REGISTRY)"]' > .buildkit/buildkitd.toml
+	@echo "  http = true" >> .buildkit/buildkitd.toml
+	@echo "  insecure = true" >> .buildkit/buildkitd.toml
+	@echo "" >> .buildkit/buildkitd.toml
+	@echo "[dns]" >> .buildkit/buildkitd.toml
+	@echo '  nameservers = ["192.168.68.62", "192.168.68.64"]' >> .buildkit/buildkitd.toml
+	@docker buildx create \
+		--name multiarch-builder \
+		--driver docker-container \
+		--driver-opt image=moby/buildkit:latest \
+		--driver-opt network=host \
+		--config .buildkit/buildkitd.toml \
+		--use
+	@docker buildx inspect --bootstrap multiarch-builder >/dev/null
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created with insecure HTTP for $(REGISTRY)"
 
 # Build and push multi-arch image with versioned tag and :latest
 docker-release: buildx-ensure
@@ -377,6 +379,13 @@ clean-all: clean
 	@rm -rf .buildkit
 	@docker buildx rm -f multiarch-builder 2>/dev/null || true
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Full clean complete"
+
+buildx-reset:
+	@echo "$(COLOR_INFO)==> Resetting buildx builder...$(COLOR_RESET)"
+	@docker buildx rm -f multiarch-builder 2>/dev/null || true
+	@rm -rf .buildkit
+	@make buildx-ensure
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Builder reset complete"
 
 # ------------------------------------------------------------------------------
 # Help Target

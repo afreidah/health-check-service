@@ -30,11 +30,13 @@
 //
 // -----------------------------------------------------------------------------
 
+// Package checker
 package checker
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -137,7 +139,7 @@ func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string, c
 
 		case <-ctx.Done():
 			// Graceful shutdown requested
-			log.Println("Stopping service checker")
+			slog.Info("stopping service checker")
 			return
 		}
 	}
@@ -160,13 +162,12 @@ func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string, c
 //   - Logs all reconnection attempts for debugging
 func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, service string, cache *cache.ServiceCache) *dbus.Conn {
 	// Try the check with current connection
-	err := CheckAndUpdateCache(conn, service, cache)
-	if err == nil {
+	if err := CheckAndUpdateCache(conn, service, cache); err == nil {
 		return conn // Success - return existing connection
 	}
 
 	// Connection might be dead - attempt reconnection
-	log.Printf("D-Bus connection error, attempting reconnection: %v", err)
+	slog.Warn("D-Bus connection error; attempting reconnection")
 
 	// Close old connection if it exists
 	if conn != nil {
@@ -185,8 +186,7 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 			// Attempt to establish new connection
 			newConn, err := dbus.NewSystemConnectionContext(ctx)
 			if err == nil {
-				log.Println("Successfully reconnected to D-Bus")
-
+				slog.Info("reconnected to D-Bus", "attempt", attemptNum)
 				// Immediately check with new connection
 				if checkErr := CheckAndUpdateCache(newConn, service, cache); checkErr == nil {
 					return newConn
@@ -196,8 +196,8 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 			}
 
 			// Reconnection failed, wait before retry
-			log.Printf("[Attempt %d] D-Bus reconnection failed, retrying in %v: %v",
-				attemptNum, retryDelay, err)
+			slog.Warn("D-Bus reconnection failed; retrying",
+				"attempt", attemptNum, "retry_delay", retryDelay.String())
 
 			select {
 			case <-time.After(retryDelay):
@@ -205,8 +205,8 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 				retryDelay *= backoffMultiplier
 				if retryDelay > maxRetryDelay {
 					retryDelay = maxRetryDelay
-					attemptNum++
 				}
+				attemptNum++
 			case <-ctx.Done():
 				// Shutdown during backoff wait
 				return nil
@@ -238,7 +238,7 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	// Query systemd for service's ActiveState property via D-Bus
 	prop, err := conn.GetUnitPropertyContext(context.Background(), service+".service", "ActiveState")
 	if err != nil {
-		log.Printf("Error checking service %s: %v", service, err)
+		slog.Error("error checking service via D-Bus", "service", service, "err", err)
 		cache.UpdateStatus(http.StatusInternalServerError, "error")
 		metrics.CheckFailures.WithLabelValues(service, "dbus_error").Inc()
 		return err
@@ -247,16 +247,16 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	// Extract the ActiveState value from D-Bus variant type
 	activeStatus, ok := prop.Value.Value().(string)
 	if !ok {
-		log.Printf("Unexpected type for ActiveState")
+		slog.Error("unexpected type for ActiveState", "service", service)
 		cache.UpdateStatus(http.StatusInternalServerError, "type_error")
 		metrics.CheckFailures.WithLabelValues(service, "type_error").Inc()
-		return err // Return error to trigger reconnection
+		return fmt.Errorf("unexpected ActiveState type")
 	}
 
 	// Map systemd state to HTTP status code
 	statusCode, found := stateToStatusCode[activeStatus]
 	if !found {
-		log.Printf("Unknown systemd state: %s", activeStatus)
+		slog.Warn("unknown systemd state", "state", activeStatus)
 		statusCode = http.StatusInternalServerError
 	}
 

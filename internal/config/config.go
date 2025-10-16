@@ -24,11 +24,12 @@
 //
 // -----------------------------------------------------------------------------
 
+// Package config
 package config
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -195,9 +196,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tls-autocert-domain is required when using autocert")
 		}
 		// Autocert requires port 443
-		if c.TLSAutocert && c.Port != 443 {
-			log.Printf("Warning: autocert typically requires port 443, got %d. "+
-				"This may fail unless you're behind a reverse proxy.", c.Port)
+		if c.Port != 443 {
+			slog.Warn("autocert typically requires port 443; this may fail unless behind a reverse proxy",
+				"port", c.Port)
 		}
 	}
 

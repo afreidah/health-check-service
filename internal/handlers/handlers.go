@@ -25,12 +25,13 @@
 //
 // -----------------------------------------------------------------------------
 
+// Package handlers
 package handlers
 
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -72,7 +73,9 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceC
 	defer func() {
 		duration := time.Since(start).Seconds()
 		metrics.RequestDuration.Observe(duration)
-		metrics.RequestsTotal.WithLabelValues(fmt.Sprintf("%d", statusCode)).Inc()
+		metrics.RequestsTotal.
+			WithLabelValues(fmt.Sprintf("%d", statusCode)).
+			Inc()
 	}()
 
 	// -------------------------------------------------------------------------
@@ -81,7 +84,11 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceC
 	// Fetch current status from cache (updated by background checker)
 	// This is a fast, non-blocking read operation
 	statusCode, status := cache.GetStatus()
-	log.Printf("Current status: %s", status)
+	slog.Info("health request",
+		"remote", r.RemoteAddr,
+		"state", status,
+		"status", statusCode,
+	)
 
 	// Add staleness warning
 	if cache.IsStale(30 * time.Second) {
@@ -174,7 +181,7 @@ func StatusAPIHandler(w http.ResponseWriter, r *http.Request, cache *cache.Servi
 
 	// Encode and send response
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding status response: %v", err)
+		slog.Error("error encoding status response", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

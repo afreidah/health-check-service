@@ -1,10 +1,11 @@
+// Package app
 package app
 
 import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,19 +21,36 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+// initLogger configures slog to emit structured JSON to stdout (captured by systemd/journald)
+func initLogger() {
+	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo, // set to slog.LevelDebug locally for more verbosity
+	})
+	slog.SetDefault(slog.New(h))
+}
+
 // MustLoadConfig loads and validates configuration or exits
 func MustLoadConfig() *config.Config {
+	// initialize structured logging first so any errors are emitted via slog
+	initLogger()
+
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Configuration error: %v", err)
+		slog.Error("configuration error", "err", err)
+		os.Exit(1)
 	}
 
-	log.Printf("==========================================")
-	log.Printf("Health Check Service Starting")
-	log.Printf("Service: %s | Port: %d | Interval: %ds",
-		cfg.Service, cfg.Port, cfg.Interval)
-	log.Printf("TLS: %t | Autocert: %t", cfg.TLSEnabled, cfg.TLSAutocert)
-	log.Printf("==========================================")
+	slog.Info("==========================================")
+	slog.Info("Health Check Service Starting",
+		"service", cfg.Service,
+		"port", cfg.Port,
+		"interval_sec", cfg.Interval,
+	)
+	slog.Info("TLS/Autocert settings",
+		"tls_enabled", cfg.TLSEnabled,
+		"autocert", cfg.TLSAutocert,
+	)
+	slog.Info("==========================================")
 
 	return cfg
 }
@@ -41,15 +59,16 @@ func MustLoadConfig() *config.Config {
 func MustConnectDBus(ctx context.Context, cfg *config.Config) *dbus.Conn {
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
-		log.Fatalf("Failed to connect to D-Bus: %v", err)
+		slog.Error("failed to connect to D-Bus", "err", err)
+		os.Exit(1)
 	}
 
 	// Validate service exists
-	_, err = conn.GetUnitPropertyContext(ctx, cfg.Service+".service", "ActiveState")
-	if err != nil {
-		log.Fatalf("Service '%s' not found in systemd: %v", cfg.Service, err)
+	if _, err := conn.GetUnitPropertyContext(ctx, cfg.Service+".service", "ActiveState"); err != nil {
+		slog.Error("service not found in systemd", "service", cfg.Service, "err", err)
+		os.Exit(1)
 	}
-	log.Printf("Successfully validated service: %s", cfg.Service)
+	slog.Info("successfully validated service", "service", cfg.Service)
 
 	return conn
 }
@@ -60,7 +79,7 @@ func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashb
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if _, err := w.Write(dashboardHTML); err != nil {
-			log.Printf("Error writing dashboard: %v", err)
+			slog.Error("error writing dashboard", "err", err)
 		}
 	})
 
@@ -105,13 +124,13 @@ func configureTLS(srv *http.Server, cfg *config.Config) {
 			MinVersion:     tls.VersionTLS12,
 		}
 
-		log.Printf("Let's Encrypt autocert enabled for domain: %s", cfg.TLSAutocertDomain)
+		slog.Info("Let's Encrypt autocert enabled", "domain", cfg.TLSAutocertDomain)
 
 		// Start HTTP server for ACME challenges
 		go func() {
-			log.Println("Starting HTTP server on :80 for ACME challenges")
+			slog.Info("starting HTTP server for ACME challenges", "addr", ":80")
 			if err := http.ListenAndServe(":80", certManager.HTTPHandler(nil)); err != nil {
-				log.Printf("ACME challenge server error: %v", err)
+				slog.Error("ACME challenge server error", "err", err)
 			}
 		}()
 
@@ -144,30 +163,39 @@ func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 		var err error
 
 		if cfg.TLSAutocert {
-			log.Printf("Monitoring %s on :%d (HTTPS with Let's Encrypt)", cfg.Service, cfg.Port)
-			log.Printf("Dashboard: https://%s:%d/", cfg.TLSAutocertDomain, cfg.Port)
-			log.Printf("Health: https://%s:%d/health", cfg.TLSAutocertDomain, cfg.Port)
-			log.Printf("API: https://%s:%d/api/status", cfg.TLSAutocertDomain, cfg.Port)
-			log.Printf("Metrics: https://%s:%d/metrics", cfg.TLSAutocertDomain, cfg.Port)
+			slog.Info("monitoring (HTTPS with Let's Encrypt)",
+				"service", cfg.Service, "port", cfg.Port, "domain", cfg.TLSAutocertDomain)
+			slog.Info("endpoints",
+				"dashboard", fmt.Sprintf("https://%s:%d/", cfg.TLSAutocertDomain, cfg.Port),
+				"health", fmt.Sprintf("https://%s:%d/health", cfg.TLSAutocertDomain, cfg.Port),
+				"api", fmt.Sprintf("https://%s:%d/api/status", cfg.TLSAutocertDomain, cfg.Port),
+				"metrics", fmt.Sprintf("https://%s:%d/metrics", cfg.TLSAutocertDomain, cfg.Port),
+			)
 			err = srv.ListenAndServeTLS("", "")
 		} else if cfg.TLSEnabled {
-			log.Printf("Monitoring %s on :%d (HTTPS with manual certs)", cfg.Service, cfg.Port)
-			log.Printf("Dashboard: https://localhost:%d/", cfg.Port)
-			log.Printf("Health: https://localhost:%d/health", cfg.Port)
-			log.Printf("API: https://localhost:%d/api/status", cfg.Port)
-			log.Printf("Metrics: https://localhost:%d/metrics", cfg.Port)
+			slog.Info("monitoring (HTTPS with manual certs)",
+				"service", cfg.Service, "port", cfg.Port)
+			slog.Info("endpoints",
+				"dashboard", fmt.Sprintf("https://localhost:%d/", cfg.Port),
+				"health", fmt.Sprintf("https://localhost:%d/health", cfg.Port),
+				"api", fmt.Sprintf("https://localhost:%d/api/status", cfg.Port),
+				"metrics", fmt.Sprintf("https://localhost:%d/metrics", cfg.Port),
+			)
 			err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 		} else {
-			log.Printf("Monitoring %s on :%d (HTTP)", cfg.Service, cfg.Port)
-			log.Printf("Dashboard: http://localhost:%d/", cfg.Port)
-			log.Printf("Health: http://localhost:%d/health", cfg.Port)
-			log.Printf("API: http://localhost:%d/api/status", cfg.Port)
-			log.Printf("Metrics: http://localhost:%d/metrics", cfg.Port)
+			slog.Info("monitoring (HTTP)", "service", cfg.Service, "port", cfg.Port)
+			slog.Info("endpoints",
+				"dashboard", fmt.Sprintf("http://localhost:%d/", cfg.Port),
+				"health", fmt.Sprintf("http://localhost:%d/health", cfg.Port),
+				"api", fmt.Sprintf("http://localhost:%d/api/status", cfg.Port),
+				"metrics", fmt.Sprintf("http://localhost:%d/metrics", cfg.Port),
+			)
 			err = srv.ListenAndServe()
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server failed: %v", err)
+			slog.Error("http server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 }
@@ -178,7 +206,7 @@ func WaitForShutdown(srv *http.Server, cancelChecker context.CancelFunc) {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	<-sigChan
-	log.Println("Shutdown signal received, gracefully shutting down...")
+	slog.Info("shutdown signal received; gracefully shutting down...")
 
 	// Stop background checker first
 	cancelChecker()
@@ -188,8 +216,8 @@ func WaitForShutdown(srv *http.Server, cancelChecker context.CancelFunc) {
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+		slog.Error("server shutdown error", "err", err)
 	}
 
-	log.Println("Server stopped")
+	slog.Info("server stopped")
 }

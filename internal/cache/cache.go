@@ -19,6 +19,7 @@
 //
 // -----------------------------------------------------------------------------
 
+// Package cache
 package cache
 
 import (
@@ -45,7 +46,6 @@ type ServiceCache struct {
 // -----------------------------------------------------------------------------
 
 // GetStatus returns the current cached status code and state.
-// This method is safe for concurrent access by multiple HTTP handlers.
 // Uses RLock to allow multiple simultaneous readers.
 func (c *ServiceCache) GetStatus() (int, string) {
 	c.mu.RLock()

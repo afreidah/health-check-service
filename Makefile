@@ -65,7 +65,7 @@ COLOR_WARN  := \033[0;33m
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
         test fmt lint lint-fix lint-verbose vet vuln \
-        docker-build docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
+        docker-build buildx-ensure docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
         docker-scan docker-tag docker-push docker-push-latest docker-run \
         docker-clean docker-release \
         generate-cert run-tls docker-run-tls clean-certs run-autocert docker-run-autocert \
@@ -260,13 +260,24 @@ docker-build:
 		-t $(FULL_IMAGE):$(DOCKER_TAG) .
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Docker image built: $(FULL_IMAGE):$(DOCKER_TAG)"
 
+# Ensure buildx builder is ready for multi-platform builds
+buildx-ensure:
+	@docker buildx version >/dev/null 2>&1 || { echo "$(COLOR_WARN)[ERR]$(COLOR_RESET) Docker Buildx is not available. Please upgrade Docker."; exit 1; }
+	@docker buildx inspect multiarch-builder >/dev/null 2>&1 || { \
+		echo "$(COLOR_INFO)==> Creating multiarch-builder for multi-platform builds...$(COLOR_RESET)"; \
+		docker buildx create --name multiarch-builder --driver docker-container --use; \
+		docker buildx inspect --bootstrap multiarch-builder >/dev/null; \
+		echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created"; \
+	}
+
 # Build and push multi-arch image with versioned tag and :latest
-docker-release:
+docker-release: buildx-ensure
 	@echo "$(COLOR_INFO)==> Building and pushing multi-arch image...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Platforms: $(PLATFORMS)$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Tags: $(DOCKER_TAG), latest$(COLOR_RESET)"
 	docker buildx build \
+		--builder multiarch-builder \
 		--platform $(PLATFORMS) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
@@ -392,6 +403,7 @@ help:
 	@echo ""
 	@echo "$(COLOR_WARN)Docker:$(COLOR_RESET)"
 	@echo "  docker-build                 - Build single-arch image (tag=$(DOCKER_TAG))"
+	@echo "  buildx-ensure                - Ensure buildx builder exists (run once per host)"
 	@echo "  docker-release               - Build & push multi-arch (versioned tag + :latest)"
 	@echo "  docker-scan-checkov          - Scan Dockerfile with Checkov"
 	@echo "  docker-scan-trivy-config     - Scan Docker config with Trivy"

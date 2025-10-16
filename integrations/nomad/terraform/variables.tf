@@ -83,14 +83,14 @@ variable "task_name" {
   default     = "health-checker"
 }
 
-variable "count" {
+variable "task_count" { # 'count' is reserved in module blocks
   type        = number
   description = "Number of task instances."
   default     = 1
 
   validation {
-    condition     = var.count >= 1 && var.count <= 50
-    error_message = "count must be between 1 and 50."
+    condition     = var.task_count >= 1 && var.task_count <= 50
+    error_message = "task_count must be between 1 and 50."
   }
 }
 
@@ -282,4 +282,3 @@ variable "memory" {
   description = "Nomad memory (MB) for the task."
   default     = 128
 }
-

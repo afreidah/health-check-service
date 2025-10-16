@@ -21,11 +21,7 @@ terraform {
 # -----------------------------------------------------------------------------
 # Nomad Provider Configuration
 # -----------------------------------------------------------------------------
-# Configure via variables (address/token), or use a provider block override at
-# the root module if you need multiple Nomad clusters/environments.
-# -----------------------------------------------------------------------------
-
 provider "nomad" {
-  address = var.nomad_address
-  token   = var.nomad_token
+  address   = var.nomad_address
+  secret_id = var.nomad_token
 }

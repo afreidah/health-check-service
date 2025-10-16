@@ -26,28 +26,33 @@ locals {
     "traefik.http.services.health.loadbalancer.server.scheme=http",
     "traefik.http.services.health.loadbalancer.healthcheck.path=${var.health_path}",
     "traefik.http.services.health.loadbalancer.healthcheck.interval=${var.health_interval}",
-    "traefik.http.services.health.loadbalancer.healthcheck.timeout=${var.health_timeout}"
+    "traefik.http.services.health.loadbalancer.healthcheck.timeout=${var.health_timeout}",
   ]
 
   service_tags = concat(local.base_traefik_tags, var.extra_service_tags)
 
-  docker_volumes = var.mount_dbus_socket ? ["/var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro"] : []
+  # --- Multi-line ternary (list) ---
+  docker_volumes = var.mount_dbus_socket ? [
+    "/var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro",
+  ] : []
 
-  logging_block = var.use_journald_logging ? <<-HCL
-      logging {
-        type = "journald"
-        config {
-          tag = "${var.journald_tag}"
-        }
+  # --- Heredoc rendered once, gated by boolean separately ---
+  logging_block_rendered = <<-HCL
+    logging {
+      type = "journald"
+      config {
+        tag = "${var.journald_tag}"
       }
-    HCL : ""
+    }
+  HCL
+
+  logging_block = var.use_journald_logging ? local.logging_block_rendered : ""
 }
 
 # -----------------------------------------------------------------------------
 # Nomad Job Resource
 # -----------------------------------------------------------------------------
 resource "nomad_job" "this" {
-  # Render the Nomad jobspec with module variables
   jobspec = <<-EOT
     job "${var.job_name}" {
       region      = "${var.region}"
@@ -56,12 +61,13 @@ resource "nomad_job" "this" {
       type        = "service"
 
       group "${var.group_name}" {
-        count = ${var.count}
+        count = ${var.task_count}
 
-        # --- Networking (publish node port static) ---
+        # --- Networking (publish node port static, map to container port) ---
         network {
           port "http" {
             static = ${var.host_port}
+            to     = ${var.container_port}
           }
         }
 
@@ -69,8 +75,8 @@ resource "nomad_job" "this" {
           driver = "docker"
 
           config {
-            image  = "${var.image_repo}:${var.image_tag}"
-            ports  = ["http"]
+            image   = "${var.image_repo}:${var.image_tag}"
+            ports   = ["http"]
             volumes = ${jsonencode(local.docker_volumes)}
             args    = ${jsonencode(var.args)}
             ${local.logging_block}
@@ -109,7 +115,7 @@ resource "nomad_job" "this" {
     }
   EOT
 
-  # Keep cluster clean on destroy or job ID change
   deregister_on_destroy   = true
   deregister_on_id_change = true
 }
+

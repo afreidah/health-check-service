@@ -15,7 +15,7 @@ BINARY_NAME := health-checker
 # Build directory
 BUILD_DIR := bin
 
-# Main package location
+# Main package
 MAIN_PATH := ./cmd/health-checker/main.go
 
 # Docker image name and tag
@@ -42,12 +42,20 @@ IMG_LATEST_AMD := $(FULL_IMAGE):latest-amd64
 IMG_LATEST_ARM := $(FULL_IMAGE):latest-arm64
 
 # Go commands
-GOCMD := go
+GOCMD   := go
 GOBUILD := $(GOCMD) build
 GOCLEAN := $(GOCMD) clean
-GOTEST := $(GOCMD) test
-GOMOD := $(GOCMD) mod
-GOFMT := $(GOCMD) fmt
+GOTEST  := $(GOCMD) test
+GOMOD   := $(GOCMD) mod
+GOFMT   := $(GOCMD) fmt
+GOVET   := $(GOCMD) vet
+
+# Build reproducibility / metadata
+GOFLAGS ?= -mod=readonly
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 # ANSI color codes
 COLOR_RESET := \033[0m
@@ -56,8 +64,8 @@ COLOR_OK    := \033[0;32m
 COLOR_WARN  := \033[0;33m
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
-        install-golangci-lint install-gotestsum install-checkov install-trivy \
-        test fmt lint lint-fix lint-verbose \
+        install-golangci-lint install-gotestsum install-checkov install-trivy install-govulncheck \
+        test fmt lint lint-fix lint-verbose vet vuln \
         docker-build docker-buildx buildx-setup docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
         docker-scan docker-tag docker-push docker-push-latest docker-run docker-compose-up docker-compose-down docker-clean \
         docker-release docker-release-daemon \
@@ -119,6 +127,15 @@ install-trivy:
 		echo "$(COLOR_OK)[OK]$(COLOR_RESET) Trivy already installed"; \
 	fi
 
+install-govulncheck:
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "$(COLOR_INFO)==> Installing govulncheck...$(COLOR_RESET)"; \
+		go install golang.org/x/vuln/cmd/govulncheck@latest; \
+		echo "$(COLOR_OK)[OK]$(COLOR_RESET) govulncheck installed"; \
+	else \
+		echo "$(COLOR_OK)[OK]$(COLOR_RESET) govulncheck already installed"; \
+	fi
+
 # ------------------------------------------------------------------------------
 # Build Targets
 # ------------------------------------------------------------------------------
@@ -126,7 +143,7 @@ install-trivy:
 build: deps
 	@echo "$(COLOR_INFO)==> Building $(BINARY_NAME)...$(COLOR_RESET)"
 	@mkdir -p $(BUILD_DIR)
-	@$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	@$(GOBUILD) $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
 # ------------------------------------------------------------------------------
@@ -172,6 +189,11 @@ fmt:
 	@$(GOFMT) ./...
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Code formatted"
 
+vet:
+	@echo "$(COLOR_INFO)==> go vet...$(COLOR_RESET)"
+	@$(GOVET) ./...
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Vet complete"
+
 lint: install-golangci-lint
 	@echo "$(COLOR_INFO)==> Running golangci-lint...$(COLOR_RESET)"
 	@golangci-lint run ./...
@@ -185,6 +207,11 @@ lint-fix: install-golangci-lint
 lint-verbose: install-golangci-lint
 	@echo "$(COLOR_INFO)==> Running golangci-lint (verbose)...$(COLOR_RESET)"
 	@golangci-lint run -v ./...
+
+vuln: install-govulncheck
+	@echo "$(COLOR_INFO)==> govulncheck...$(COLOR_RESET)"
+	@govulncheck ./...
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Vulnerability check complete"
 
 # ------------------------------------------------------------------------------
 # TLS/HTTPS Targets
@@ -272,7 +299,11 @@ clean-certs:
 # Build single-arch image for the current host arch (tags with $(DOCKER_TAG))
 docker-build:
 	@echo "$(COLOR_INFO)==> Building Docker image (single-arch)...$(COLOR_RESET)"
-	docker build -t $(FULL_IMAGE):$(DOCKER_TAG) .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		-t $(FULL_IMAGE):$(DOCKER_TAG) .
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Docker image built: $(FULL_IMAGE):$(DOCKER_TAG)"
 
 # Setup Buildx builder with HOST networking and a BuildKit config that forces HTTP/insecure
@@ -299,38 +330,62 @@ docker-buildx: buildx-setup
 	@echo "$(COLOR_INFO)==> Building multi-arch image (no push): $(PLATFORMS)$(COLOR_RESET)"
 	docker buildx build \
 		--platform $(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
 		-t $(FULL_IMAGE):$(DOCKER_TAG) \
 		--load \
 		.
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch build complete (loaded into local docker as host arch only)"
 
-# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
-# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
+# Build & push multi-arch via Buildx (simple and reliable)
 docker-release: buildx-setup
 	@echo "$(COLOR_INFO)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
-	@echo "$(COLOR_INFO)     Tags : $(DOCKER_TAG), latest$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)     Tags : $(DOCKER_TAG)$(COLOR_RESET)"
 	docker buildx build \
 		--platform $(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
 		--tag $(FULL_IMAGE):$(DOCKER_TAG) \
-		--tag $(FULL_IMAGE):latest \
 		--push \
 		.
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and :latest"
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG)"
 
-# Build and push multi-arch image directly with buildx (simple and reliable)
+# Build and push multi-arch image (adds :latest only if DOCKER_TAG != latest)
 docker-release-daemon: buildx-setup
 	@echo "$(COLOR_INFO)==> Building and pushing multi-arch image...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Platforms: $(PLATFORMS)$(COLOR_RESET)"
-	@echo "$(COLOR_INFO)     Tags: $(DOCKER_TAG), latest$(COLOR_RESET)"
-	docker buildx build \
-		--builder multiarch-builder \
-		--platform $(PLATFORMS) \
-		--tag $(FULL_IMAGE):$(DOCKER_TAG) \
-		--tag $(FULL_IMAGE):latest \
-		--push \
-		.
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
+	@echo "$(COLOR_INFO)     Tag: $(DOCKER_TAG)$(COLOR_RESET)"
+	@if [ "$(DOCKER_TAG)" = "latest" ]; then \
+	  docker buildx build \
+	    --builder multiarch-builder \
+	    --platform $(PLATFORMS) \
+	    --build-arg VERSION=$(VERSION) \
+	    --build-arg COMMIT=$(COMMIT) \
+	    --build-arg DATE=$(DATE) \
+	    --tag $(FULL_IMAGE):latest \
+	    --push \
+	    . ; \
+	else \
+	  docker buildx build \
+	    --builder multiarch-builder \
+	    --platform $(PLATFORMS) \
+	    --build-arg VERSION=$(VERSION) \
+	    --build-arg COMMIT=$(COMMIT) \
+	    --build-arg DATE=$(DATE) \
+	    --tag $(FULL_IMAGE):$(DOCKER_TAG) \
+	    --tag $(FULL_IMAGE):latest \
+	    --push \
+	    . ; \
+	fi
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed."
+
+docker-scan-checkov: install-checkov
+	@echo "$(COLOR_INFO)==> Scanning Dockerfile with Checkov...$(COLOR_RESET)"
+	@checkov -d . -o cli || true
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Checkov scan complete"
 
 docker-scan-trivy-config: install-trivy
 	@echo "$(COLOR_INFO)==> Scanning Dockerfile with Trivy (config)...$(COLOR_RESET)"
@@ -390,12 +445,11 @@ docker-clean:
 # CI/CD Pipeline Targets
 # ------------------------------------------------------------------------------
 
-pull_request: fmt lint test build docker-scan
+pull_request: fmt vet lint test build docker-scan
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) PR pipeline complete"
 
 # For multi-arch publishing in CI:
 #   make merge DOCKER_TAG=v1.2.3
-# Use the reliable daemon-push path by default
 merge: pull_request docker-release-daemon
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Merge pipeline complete - multi-arch image pushed to registry"
 
@@ -428,10 +482,11 @@ help:
 	@echo "  install-gotestsum            - Install gotestsum"
 	@echo "  install-checkov              - Install Checkov"
 	@echo "  install-trivy                - Install Trivy"
+	@echo "  install-govulncheck         - Install govulncheck"
 	@echo ""
 	@echo "$(COLOR_WARN)Build & Run:$(COLOR_RESET)"
 	@echo "  all                          - Fetch dependencies and build (default)"
-	@echo "  build                        - Build the binary"
+	@echo "  build                        - Build the binary (version metadata embedded)"
 	@echo "  run                          - Build and run (SERVICE / PORT / INTERVAL overridable)"
 	@echo "  run-env                      - Run with environment variables"
 	@echo "  run-config                   - Run with config file"
@@ -439,9 +494,11 @@ help:
 	@echo "$(COLOR_WARN)Development:$(COLOR_RESET)"
 	@echo "  test                         - Run Go tests"
 	@echo "  fmt                          - Format Go code"
+	@echo "  vet                          - Run go vet"
 	@echo "  lint                         - Run golangci-lint"
 	@echo "  lint-fix                     - Run golangci-lint with auto-fix"
 	@echo "  lint-verbose                 - Run golangci-lint (verbose output)"
+	@echo "  vuln                         - Run govulncheck"
 	@echo ""
 	@echo "$(COLOR_WARN)TLS/HTTPS:$(COLOR_RESET)"
 	@echo "  generate-cert                - Generate self-signed certificate for testing"
@@ -452,8 +509,8 @@ help:
 	@echo "  docker-build                 - Build single-arch image (tag=$(DOCKER_TAG))"
 	@echo "  buildx-setup                 - Prepare Buildx (host networking + insecure HTTP registry)"
 	@echo "  docker-buildx                - Build multi-arch (no push)"
-	@echo "  docker-release               - Build & PUSH multi-arch via Buildx (may fail on private registries)"
-	@echo "  docker-release-daemon        - Build & PUSH multi-arch via daemon + manifest (reliable)"
+	@echo "  docker-release               - Build & PUSH multi-arch (tag only)"
+	@echo "  docker-release-daemon        - Build & PUSH multi-arch (adds :latest if tag != latest)"
 	@echo "  docker-scan-checkov          - Scan Dockerfile with Checkov"
 	@echo "  docker-scan-trivy-config     - Scan Docker config with Trivy"
 	@echo "  docker-scan-trivy-image      - Scan built image with Trivy"
@@ -463,8 +520,8 @@ help:
 	@echo "  docker-run                   - Run container (uses tag=$(DOCKER_TAG))"
 	@echo ""
 	@echo "$(COLOR_WARN)CI/CD:$(COLOR_RESET)"
-	@echo "  pull_request                 - PR pipeline (fmt, lint, test, build, scans)"
-	@echo "  merge                        - Multi-arch release (daemon push + manifest)"
+	@echo "  pull_request                 - PR pipeline (fmt, vet, lint, test, build, scans)"
+	@echo "  merge                        - Multi-arch release"
 	@echo ""
 	@echo "$(COLOR_WARN)Cleanup:$(COLOR_RESET)"
 	@echo "  clean                        - Remove build artifacts"
@@ -476,3 +533,4 @@ help:
 	@echo "  make docker-buildx PLATFORMS=linux/amd64,linux/arm64"
 	@echo "  make docker-run SERVICE=redis PORT=6379"
 	@echo "  make merge DOCKER_TAG=v$$(date +%Y.%m.%d)-$$(git rev-parse --short HEAD)"
+

@@ -1,3 +1,13 @@
+// -----------------------------------------------------------------------------
+// App Module
+// -----------------------------------------------------------------------------
+// Core application wiring for the Health Check Service:
+// - Slog initialization and build metadata wiring
+// - HTTP server + TLS setup
+// - Systemd (D-Bus) connection and background checker
+// - Graceful shutdown handling
+// -----------------------------------------------------------------------------
+
 // Package app
 package app
 
@@ -16,41 +26,63 @@ import (
 	"github.com/afreidah/health-check-service/internal/checker"
 	"github.com/afreidah/health-check-service/internal/config"
 	"github.com/afreidah/health-check-service/internal/handlers"
+	"github.com/afreidah/health-check-service/internal/logging"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// initLogger configures slog to emit structured JSON to stdout (captured by systemd/journald)
-func initLogger() {
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo, // set to slog.LevelDebug locally for more verbosity
-	})
-	slog.SetDefault(slog.New(h))
-}
+// link-time vars (set via Makefile -ldflags)
+var (
+	// These are intended to be set via -ldflags at build time.
+	// Example:
+	//   -X 'github.com/afreidah/health-check-service/internal/app.version=${VERSION}'
+	//   -X 'github.com/afreidah/health-check-service/internal/app.commit=${GIT_SHA}'
+	//   -X 'github.com/afreidah/health-check-service/internal/app.date=${BUILD_DATE}'
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
+// component-scoped logger
+var loga = slog.Default().With("component", "app")
 
 // MustLoadConfig loads and validates configuration or exits
 func MustLoadConfig() *config.Config {
 	// initialize structured logging first so any errors are emitted via slog
-	initLogger()
+	logging.InitFromEnv(map[string]string{
+		"service":    "health-check-service",
+		"version":    version,
+		"commit":     commit,
+		"build_date": date,
+	})
 
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("configuration error", "err", err)
+		loga.Error("configuration error", "err", err)
 		os.Exit(1)
 	}
 
-	slog.Info("==========================================")
-	slog.Info("Health Check Service Starting",
+	// now that we know the monitored unit, re-init to include it as a static tag
+	logging.InitFromEnv(map[string]string{
+		"service":    "health-check-service",
+		"unit":       cfg.Service, // systemd unit name
+		"version":    version,
+		"commit":     commit,
+		"build_date": date,
+	})
+
+	loga = slog.Default().With("component", "app")
+
+	loga.Info("Health Check Service Starting",
 		"service", cfg.Service,
 		"port", cfg.Port,
 		"interval_sec", cfg.Interval,
 	)
-	slog.Info("TLS/Autocert settings",
+	loga.Info("TLS/Autocert settings",
 		"tls_enabled", cfg.TLSEnabled,
 		"autocert", cfg.TLSAutocert,
 	)
-	slog.Info("==========================================")
 
 	return cfg
 }

@@ -65,7 +65,7 @@ COLOR_WARN  := \033[0;33m
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
         test fmt lint lint-fix lint-verbose vet vuln \
-        docker-build buildx-ensure buildx-reset docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
+        docker-build docker-scan-checkov docker-scan-trivy-config docker-scan-trivy-image \
         docker-scan docker-tag docker-push docker-push-latest docker-run \
         docker-clean docker-release \
         generate-cert run-tls docker-run-tls clean-certs run-autocert docker-run-autocert \
@@ -282,23 +282,49 @@ buildx-ensure:
 	@docker buildx inspect --bootstrap multiarch-builder >/dev/null
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created with insecure HTTP for $(REGISTRY)"
 
-# Build and push multi-arch image with versioned tag and :latest
-docker-release: buildx-ensure
-	@echo "$(COLOR_INFO)==> Building and pushing multi-arch image...$(COLOR_RESET)"
-	@echo "$(COLOR_INFO)     Platforms: $(PLATFORMS)$(COLOR_RESET)"
+# Build and push multi-arch image - build each locally, push, then create manifest
+docker-release:
+	@echo "$(COLOR_INFO)==> Building multi-arch image...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Tags: $(DOCKER_TAG), latest$(COLOR_RESET)"
-	docker buildx build \
-		--builder multiarch-builder \
-		--platform $(PLATFORMS) \
+	
+	# Build AMD64 locally
+	@echo "$(COLOR_INFO)==> Building AMD64 locally...$(COLOR_RESET)"
+	GOOS=linux GOARCH=amd64 $(GOBUILD) $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg DATE=$(DATE) \
-		--tag $(FULL_IMAGE):$(DOCKER_TAG) \
-		--tag $(FULL_IMAGE):latest \
-		--push \
+		--file Dockerfile \
+		-t $(FULL_IMAGE):$(DOCKER_TAG)-amd64 \
 		.
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and $(FULL_IMAGE):latest"
+	docker push $(FULL_IMAGE):$(DOCKER_TAG)-amd64
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) AMD64 image pushed"
+	
+	# Build ARM64 locally
+	@echo "$(COLOR_INFO)==> Building ARM64 locally...$(COLOR_RESET)"
+	GOOS=linux GOARCH=arm64 $(GOBUILD) $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		--file Dockerfile \
+		-t $(FULL_IMAGE):$(DOCKER_TAG)-arm64 \
+		.
+	docker push $(FULL_IMAGE):$(DOCKER_TAG)-arm64
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) ARM64 image pushed"
+	
+	# Create and push manifests
+	@echo "$(COLOR_INFO)==> Creating manifests...$(COLOR_RESET)"
+	docker manifest rm $(FULL_IMAGE):$(DOCKER_TAG) 2>/dev/null || true
+	docker manifest rm $(FULL_IMAGE):latest 2>/dev/null || true
+	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) $(FULL_IMAGE):$(DOCKER_TAG)-amd64 $(FULL_IMAGE):$(DOCKER_TAG)-arm64
+	docker manifest create $(FULL_IMAGE):latest $(FULL_IMAGE):$(DOCKER_TAG)-amd64 $(FULL_IMAGE):$(DOCKER_TAG)-arm64
+	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG)
+	docker manifest push $(FULL_IMAGE):latest
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Manifests pushed"
+	
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image complete"
 
 docker-scan-checkov:
 	@echo "$(COLOR_INFO)==> Scanning Dockerfile with Checkov...$(COLOR_RESET)"
@@ -374,18 +400,9 @@ clean:
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Clean complete"
 
 clean-all: clean
-	@echo "$(COLOR_INFO)==> Cleaning Go cache, buildkit, and builder...$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)==> Cleaning Go cache...$(COLOR_RESET)"
 	@$(GOCMD) clean -cache -modcache
-	@rm -rf .buildkit
-	@docker buildx rm -f multiarch-builder 2>/dev/null || true
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Full clean complete"
-
-buildx-reset:
-	@echo "$(COLOR_INFO)==> Resetting buildx builder...$(COLOR_RESET)"
-	@docker buildx rm -f multiarch-builder 2>/dev/null || true
-	@rm -rf .buildkit
-	@make buildx-ensure
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Builder reset complete"
 
 # ------------------------------------------------------------------------------
 # Help Target
@@ -423,8 +440,7 @@ help:
 	@echo ""
 	@echo "$(COLOR_WARN)Docker:$(COLOR_RESET)"
 	@echo "  docker-build                 - Build single-arch image (tag=$(DOCKER_TAG))"
-	@echo "  buildx-ensure                - Ensure buildx builder exists (run once per host)"
-	@echo "  docker-release               - Build & push multi-arch (versioned tag + :latest)"
+	@echo "  docker-release               - Build & push multi-arch manifest"
 	@echo "  docker-scan-checkov          - Scan Dockerfile with Checkov"
 	@echo "  docker-scan-trivy-config     - Scan Docker config with Trivy"
 	@echo "  docker-scan-trivy-image      - Scan built image with Trivy"

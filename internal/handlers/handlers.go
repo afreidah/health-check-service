@@ -29,6 +29,8 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -38,6 +40,25 @@ import (
 	"github.com/afreidah/health-check-service/internal/cache"
 	"github.com/afreidah/health-check-service/internal/metrics"
 )
+
+// component logger
+var logh = slog.Default().With("component", "http")
+
+func requestID(r *http.Request) string {
+	if id := r.Header.Get("X-Request-ID"); id != "" {
+		return id
+	}
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return xff
+	}
+	return r.RemoteAddr
+}
 
 // -----------------------------------------------------------------------------
 // Health Check Handler
@@ -84,10 +105,15 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceC
 	// Fetch current status from cache (updated by background checker)
 	// This is a fast, non-blocking read operation
 	statusCode, status := cache.GetStatus()
-	slog.Info("health request",
-		"remote", r.RemoteAddr,
+
+	// in HealthHandler:
+	logh.Info("health request",
+		"request_id", requestID(r),
+		"client_ip", clientIP(r),
 		"state", status,
 		"status", statusCode,
+		"path", r.URL.Path,
+		"method", r.Method,
 	)
 
 	// Add staleness warning
@@ -181,7 +207,12 @@ func StatusAPIHandler(w http.ResponseWriter, r *http.Request, cache *cache.Servi
 
 	// Encode and send response
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("error encoding status response", "err", err)
+		// in StatusAPIHandler error path:
+		logh.Error("error encoding status response",
+			"request_id", requestID(r),
+			"client_ip", clientIP(r),
+			"err", err,
+		)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

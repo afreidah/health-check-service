@@ -1,36 +1,13 @@
 // -----------------------------------------------------------------------------
 // Background Service Checker
 // -----------------------------------------------------------------------------
-//
-// This package implements the background health checking logic that monitors
-// systemd services via D-Bus. It runs in a separate goroutine and periodically
-// queries the service status, updating the shared cache with the results.
-//
-// Architecture:
-//   - Runs as a long-lived background goroutine
-//   - Uses a ticker for periodic health checks
-//   - Communicates with systemd via D-Bus system bus
-//   - Updates thread-safe cache with results
-//   - Publishes metrics to Prometheus
-//
-// Resilience:
-//   - Automatically reconnects to D-Bus if connection drops
-//   - Uses exponential backoff for reconnection attempts
-//   - Continues monitoring without manual intervention
-//   - Logs reconnection attempts for observability
-//
-// Systemd Integration:
-//   The checker queries the "ActiveState" property of systemd units, which
-//   can return values like "active", "inactive", "failed", etc. These states
-//   are mapped to appropriate HTTP status codes for the health endpoint.
-//
-// Graceful Shutdown:
-//   The checker respects context cancellation and will stop cleanly when
-//   the main application initiates shutdown.
-//
+// Background health-check loop for systemd-managed services:
+// - Periodic ActiveState polling via D-Bus
+// - Thread-safe cache updates + Prometheus metrics
+// - Exponential backoff reconnection to D-Bus
+// - Context-aware graceful shutdown
 // -----------------------------------------------------------------------------
 
-// Package checker
 package checker
 
 import (
@@ -91,30 +68,24 @@ var stateToStatusCode = map[string]int{
 	StateReloading:    http.StatusServiceUnavailable, // 503 - Service reloading
 }
 
+// component logger
+var logc = slog.Default().With("component", "checker")
+
 // -----------------------------------------------------------------------------
 // Background Checker
 // -----------------------------------------------------------------------------
 
-// StartServiceChecker runs a background loop that periodically checks the
-// systemd service status and updates the cache. This function blocks until
-// the context is cancelled.
+// StartServiceChecker launches a goroutine that periodically polls the given
+// systemd unit and updates the shared cache until ctx is cancelled. It performs
+// an immediate check on startup and maintains the D-Bus connection with
+// automatic exponential-backoff reconnection.
 //
-// The checker performs an immediate check on startup to populate the cache
-// before any HTTP requests arrive, then continues checking at the specified
-// interval.
-//
-// D-Bus Connection Management:
-//
-//	The checker maintains its own D-Bus connection and will automatically
-//	reconnect if the connection drops. This ensures the service remains
-//	operational even if D-Bus restarts or has issues.
-//
-// Parameters:
-//   - ctx: Context for cancellation during graceful shutdown
-//   - conn: Initial D-Bus connection (may be replaced on reconnect)
-//   - service: Name of the systemd service to monitor (without .service suffix)
-//   - cache: Thread-safe cache to update with status
-//   - interval: Time between health checks
+// Params:
+//   - ctx: cancellation context
+//   - conn: initial D-Bus connection (may be replaced on reconnect)
+//   - service: systemd unit name (without ".service")
+//   - cache: shared status cache
+//   - interval: polling period
 func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string, cache *cache.ServiceCache, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -139,7 +110,7 @@ func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string, c
 
 		case <-ctx.Done():
 			// Graceful shutdown requested
-			slog.Info("stopping service checker")
+			logc.Info("stopping service checker")
 			return
 		}
 	}
@@ -167,7 +138,7 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 	}
 
 	// Connection might be dead - attempt reconnection
-	slog.Warn("D-Bus connection error; attempting reconnection")
+	logc.Warn("D-Bus connection error; attempting reconnection")
 
 	// Close old connection if it exists
 	if conn != nil {
@@ -186,7 +157,7 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 			// Attempt to establish new connection
 			newConn, err := dbus.NewSystemConnectionContext(ctx)
 			if err == nil {
-				slog.Info("reconnected to D-Bus", "attempt", attemptNum)
+				logc.Info("reconnected to D-Bus", "attempt", attemptNum)
 				// Immediately check with new connection
 				if checkErr := CheckAndUpdateCache(newConn, service, cache); checkErr == nil {
 					return newConn
@@ -196,7 +167,7 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 			}
 
 			// Reconnection failed, wait before retry
-			slog.Warn("D-Bus reconnection failed; retrying",
+			logc.Warn("D-Bus reconnection failed; retrying",
 				"attempt", attemptNum, "retry_delay", retryDelay.String())
 
 			select {
@@ -238,7 +209,7 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	// Query systemd for service's ActiveState property via D-Bus
 	prop, err := conn.GetUnitPropertyContext(context.Background(), service+".service", "ActiveState")
 	if err != nil {
-		slog.Error("error checking service via D-Bus", "service", service, "err", err)
+		logc.Error("error checking service via D-Bus", "service", service, "err", err)
 		cache.UpdateStatus(http.StatusInternalServerError, "error")
 		metrics.CheckFailures.WithLabelValues(service, "dbus_error").Inc()
 		return err
@@ -247,7 +218,7 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	// Extract the ActiveState value from D-Bus variant type
 	activeStatus, ok := prop.Value.Value().(string)
 	if !ok {
-		slog.Error("unexpected type for ActiveState", "service", service)
+		logc.Error("unexpected type for ActiveState", "service", service)
 		cache.UpdateStatus(http.StatusInternalServerError, "type_error")
 		metrics.CheckFailures.WithLabelValues(service, "type_error").Inc()
 		return fmt.Errorf("unexpected ActiveState type")
@@ -256,7 +227,7 @@ func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCa
 	// Map systemd state to HTTP status code
 	statusCode, found := stateToStatusCode[activeStatus]
 	if !found {
-		slog.Warn("unknown systemd state", "state", activeStatus)
+		logc.Warn("unknown systemd state", "state", activeStatus)
 		statusCode = http.StatusInternalServerError
 	}
 

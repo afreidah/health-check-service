@@ -37,10 +37,8 @@ spec:
 
       containers:
         - name: health-checker
-          # Your internal, insecure registry image (multi-arch manifest pushed via Buildx)
           image: docker-mirror.service.consul:5000/health-checker:3833c0e95019c3ba8d3e815c7048da596dced439-arm64
           imagePullPolicy: IfNotPresent
-          # service=k3s and port=18081
           args: ["--service", "k3s", "--port", "18081", "--interval", "10"]
           ports:
             - containerPort: 18081
@@ -97,7 +95,7 @@ spec:
   ports:
     - name: http
       port: 18081        # ClusterIP service port
-      targetPort: http   # -> container port name
+      targetPort: http   # container port name
       protocol: TCP
   type: ClusterIP
 ---
@@ -109,8 +107,6 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    # If you use a Traefik CRD middleware for LAN allowlist, reference it like:
-    # traefik.ingress.kubernetes.io/router.middlewares: infra-lan-allowlist@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:

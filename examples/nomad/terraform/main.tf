@@ -31,7 +31,6 @@ locals {
 
   service_tags = concat(local.base_traefik_tags, var.extra_service_tags)
 
-  # --- Multi-line ternary (list) ---
   docker_volumes = var.mount_dbus_socket ? [
     "/var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro",
   ] : []

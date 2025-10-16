@@ -34,7 +34,7 @@ package checker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -43,81 +43,40 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 )
 
-// -----------------------------------------------------------------------------
-// Systemd State Constants
-// -----------------------------------------------------------------------------
-
-// Systemd ActiveState values as defined by systemd specification.
-// These represent the possible states a systemd service can be in.
+// Systemd ActiveState Constants
 const (
-	StateActive       = "active"       // Service is running
-	StateInactive     = "inactive"     // Service is stopped
-	StateFailed       = "failed"       // Service has failed
-	StateActivating   = "activating"   // Service is starting up
-	StateDeactivating = "deactivating" // Service is shutting down
-	StateReloading    = "reloading"    // Service is reloading config
+	StateActive       = "active"
+	StateInactive     = "inactive"
+	StateFailed       = "failed"
+	StateActivating   = "activating"
+	StateDeactivating = "deactivating"
+	StateReloading    = "reloading"
 )
 
-// -----------------------------------------------------------------------------
 // Reconnection Constants
-// -----------------------------------------------------------------------------
-
 const (
-	// Initial retry delay when D-Bus connection fails
 	initialRetryDelay = 1 * time.Second
-
-	// Maximum retry delay (caps exponential backoff)
-	maxRetryDelay = 30 * time.Second
-
-	// Backoff multiplier for exponential backoff
+	maxRetryDelay     = 30 * time.Second
 	backoffMultiplier = 2
 )
 
-// -----------------------------------------------------------------------------
-// State Mapping
-// -----------------------------------------------------------------------------
-
-// stateToStatusCode maps systemd ActiveState values to HTTP status codes.
-// Only "active" returns 200 OK - all other states indicate the service
-// is not fully operational and return 503 Service Unavailable.
+// State to Status Code Mapping
 var stateToStatusCode = map[string]int{
-	StateActive:       http.StatusOK,                 // 200 - Service healthy
-	StateInactive:     http.StatusServiceUnavailable, // 503 - Service stopped
-	StateFailed:       http.StatusServiceUnavailable, // 503 - Service crashed
-	StateActivating:   http.StatusServiceUnavailable, // 503 - Service starting
-	StateDeactivating: http.StatusServiceUnavailable, // 503 - Service stopping
-	StateReloading:    http.StatusServiceUnavailable, // 503 - Service reloading
+	StateActive:       http.StatusOK,
+	StateInactive:     http.StatusServiceUnavailable,
+	StateFailed:       http.StatusServiceUnavailable,
+	StateActivating:   http.StatusServiceUnavailable,
+	StateDeactivating: http.StatusServiceUnavailable,
+	StateReloading:    http.StatusServiceUnavailable,
 }
 
-// -----------------------------------------------------------------------------
-// Background Checker
-// -----------------------------------------------------------------------------
-
-// StartServiceChecker runs a background loop that periodically checks the
-// systemd service status and updates the cache. This function blocks until
-// the context is cancelled.
-//
-// The checker performs an immediate check on startup to populate the cache
-// before any HTTP requests arrive, then continues checking at the specified
-// interval.
-//
-// D-Bus Connection Management:
-//
-//	The checker maintains its own D-Bus connection and will automatically
-//	reconnect if the connection drops. This ensures the service remains
-//	operational even if D-Bus restarts or has issues.
-//
-// Parameters:
-//   - ctx: Context for cancellation during graceful shutdown
-//   - conn: Initial D-Bus connection (may be replaced on reconnect)
-//   - service: Name of the systemd service to monitor (without .service suffix)
-//   - cache: Thread-safe cache to update with status
-//   - interval: Time between health checks
-func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string, cache *cache.ServiceCache, interval time.Duration) {
+// StartServiceChecker runs background health check loop with structured logging
+func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string,
+	cache *cache.ServiceCache, interval time.Duration, logger *slog.Logger,
+) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Current connection (may be replaced on reconnection)
 	currentConn := conn
 	defer func() {
 		if currentConn != nil {
@@ -125,50 +84,43 @@ func StartServiceChecker(ctx context.Context, conn *dbus.Conn, service string, c
 		}
 	}()
 
-	// Perform immediate check on startup to populate cache before HTTP requests
-	currentConn = CheckAndUpdateCacheWithReconnect(ctx, currentConn, service, cache)
+	logger.DebugContext(ctx, "checker_started",
+		"service", service,
+		"interval_seconds", interval.Seconds(),
+	)
+
+	// Perform immediate check on startup
+	currentConn = CheckAndUpdateCacheWithReconnect(ctx, currentConn, service, cache, logger)
 
 	for {
 		select {
 		case <-ticker.C:
-			// Periodic check triggered by ticker
-			// Connection may be replaced if reconnection is needed
-			currentConn = CheckAndUpdateCacheWithReconnect(ctx, currentConn, service, cache)
+			currentConn = CheckAndUpdateCacheWithReconnect(ctx, currentConn, service, cache, logger)
 
 		case <-ctx.Done():
-			// Graceful shutdown requested
-			log.Println("Stopping service checker")
+			logger.DebugContext(ctx, "checker_stopping", "service", service)
 			return
 		}
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Health Check with Reconnection Logic
-// -----------------------------------------------------------------------------
-
-// CheckAndUpdateCacheWithReconnect wraps CheckAndUpdateCache with automatic
-// D-Bus reconnection logic. If the connection fails, it will attempt to
-// reconnect with exponential backoff.
-//
-// Returns:
-//   - The current D-Bus connection (may be a new connection if reconnected)
-//
-// Reconnection Strategy:
-//   - Exponential backoff starting at 1s, maxing at 30s
-//   - Continues retrying until successful or context cancelled
-//   - Logs all reconnection attempts for debugging
-func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, service string, cache *cache.ServiceCache) *dbus.Conn {
+// CheckAndUpdateCacheWithReconnect wraps health check with automatic D-Bus reconnection
+func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn,
+	service string, cache *cache.ServiceCache, logger *slog.Logger,
+) *dbus.Conn {
 	// Try the check with current connection
-	err := CheckAndUpdateCache(conn, service, cache)
+	err := CheckAndUpdateCache(conn, service, cache, logger)
 	if err == nil {
-		return conn // Success - return existing connection
+		return conn // Success
 	}
 
 	// Connection might be dead - attempt reconnection
-	log.Printf("D-Bus connection error, attempting reconnection: %v", err)
+	logger.ErrorContext(ctx, "dbus_connection_failed",
+		"service", service,
+		"error", err,
+	)
 
-	// Close old connection if it exists
+	// Close old connection
 	if conn != nil {
 		conn.Close()
 	}
@@ -176,99 +128,109 @@ func CheckAndUpdateCacheWithReconnect(ctx context.Context, conn *dbus.Conn, serv
 	// Reconnection loop with exponential backoff
 	attemptNum := 1
 	retryDelay := initialRetryDelay
+	startTime := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
-			// Shutdown requested during reconnection
 			return nil
 		default:
 			// Attempt to establish new connection
 			newConn, err := dbus.NewSystemConnectionContext(ctx)
 			if err == nil {
-				log.Println("Successfully reconnected to D-Bus")
-
-				// Immediately check with new connection
-				if checkErr := CheckAndUpdateCache(newConn, service, cache); checkErr == nil {
+				// Successfully connected, try a check
+				if checkErr := CheckAndUpdateCache(newConn, service, cache, logger); checkErr == nil {
+					logger.InfoContext(ctx, "dbus_reconnected",
+						"service", service,
+						"attempts_needed", attemptNum,
+						"recovery_time_ms", time.Since(startTime).Milliseconds(),
+					)
 					return newConn
 				}
-				// New connection failed check, close it and retry
+				// Check failed on new connection, close and retry
 				newConn.Close()
 			}
 
-			// Reconnection failed, wait before retry
-			log.Printf("[Attempt %d] D-Bus reconnection failed, retrying in %v: %v",
-				attemptNum, retryDelay, err)
+			// Reconnection failed
+			logger.WarnContext(ctx, "dbus_reconnection_attempt_failed",
+				"service", service,
+				"attempt", attemptNum,
+				"retry_delay_ms", retryDelay.Milliseconds(),
+				"error", err,
+			)
 
+			// Wait before retry (with early termination check)
 			select {
 			case <-time.After(retryDelay):
 				// Exponential backoff with cap
 				retryDelay *= backoffMultiplier
 				if retryDelay > maxRetryDelay {
 					retryDelay = maxRetryDelay
-					attemptNum++
 				}
+				attemptNum++
+
 			case <-ctx.Done():
-				// Shutdown during backoff wait
 				return nil
 			}
 		}
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Health Check Logic
-// -----------------------------------------------------------------------------
-
-// CheckAndUpdateCache queries systemd for the service's ActiveState via D-Bus,
-// maps it to an HTTP status code, updates the cache, and records Prometheus
-// metrics.
-//
-// Returns an error if the D-Bus connection fails, allowing the caller to
-// attempt reconnection.
-//
-// Error Handling:
-//   - D-Bus communication errors return error (triggers reconnection)
-//   - Type assertion failures return error and update cache with error state
-//   - Unknown systemd states default to 500 but don't return error
-//
-// Metrics:
-//
-//	Sets the monitored_service_status gauge to 1 for healthy, 0 otherwise
-func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCache) error {
-	// Query systemd for service's ActiveState property via D-Bus
+// CheckAndUpdateCache queries systemd service status and updates cache
+func CheckAndUpdateCache(conn *dbus.Conn, service string, cache *cache.ServiceCache,
+	logger *slog.Logger,
+) error {
+	// Query systemd for ActiveState property
 	prop, err := conn.GetUnitPropertyContext(context.Background(), service+".service", "ActiveState")
 	if err != nil {
-		log.Printf("Error checking service %s: %v", service, err)
+		logger.ErrorContext(context.Background(), "service_check_failed",
+			"service", service,
+			"error", err,
+			"error_type", "dbus_error",
+		)
 		cache.UpdateStatus(http.StatusInternalServerError, "error")
 		metrics.CheckFailures.WithLabelValues(service, "dbus_error").Inc()
 		return err
 	}
 
-	// Extract the ActiveState value from D-Bus variant type
+	// Extract ActiveState value
 	activeStatus, ok := prop.Value.Value().(string)
 	if !ok {
-		log.Printf("Unexpected type for ActiveState")
+		logger.ErrorContext(context.Background(), "service_check_failed",
+			"service", service,
+			"error_type", "type_error",
+			"details", "failed to parse ActiveState",
+		)
 		cache.UpdateStatus(http.StatusInternalServerError, "type_error")
 		metrics.CheckFailures.WithLabelValues(service, "type_error").Inc()
-		return err // Return error to trigger reconnection
+		return err
 	}
 
-	// Map systemd state to HTTP status code
+	// Map state to HTTP status code
 	statusCode, found := stateToStatusCode[activeStatus]
 	if !found {
-		log.Printf("Unknown systemd state: %s", activeStatus)
+		logger.WarnContext(context.Background(), "unknown_service_state",
+			"service", service,
+			"state", activeStatus,
+		)
 		statusCode = http.StatusInternalServerError
 	}
 
-	// Update cache with new status
+	// Update cache
 	cache.UpdateStatus(statusCode, activeStatus)
 
-	// Update Prometheus gauge: 1 for healthy (active), 0 for any other state
+	// Update Prometheus metric
 	if stateToStatusCode[activeStatus] == http.StatusOK {
 		metrics.ServiceStatus.WithLabelValues(service, activeStatus).Set(1)
 	} else {
 		metrics.ServiceStatus.WithLabelValues(service, activeStatus).Set(0)
 	}
+
+	logger.DebugContext(context.Background(), "service_checked",
+		"service", service,
+		"state", activeStatus,
+		"status_code", statusCode,
+	)
 
 	return nil // Success
 }

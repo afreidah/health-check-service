@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,58 +20,92 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// MustLoadConfig loads and validates configuration or exits
-func MustLoadConfig() *config.Config {
+// LoadConfig loads and validates configuration or returns error
+// Previously MustLoadConfig - now returns error instead of exiting
+func LoadConfig(logger *slog.Logger) (*config.Config, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Configuration error: %v", err)
+		logger.Error("configuration_failed",
+			"error", err,
+		)
+		return nil, err
 	}
 
-	log.Printf("==========================================")
-	log.Printf("Health Check Service Starting")
-	log.Printf("Service: %s | Port: %d | Interval: %ds",
-		cfg.Service, cfg.Port, cfg.Interval)
-	log.Printf("TLS: %t | Autocert: %t", cfg.TLSEnabled, cfg.TLSAutocert)
-	log.Printf("==========================================")
+	logger.Info("configuration_loaded",
+		"service", cfg.Service,
+		"port", cfg.Port,
+		"interval", cfg.Interval,
+		"tls_enabled", cfg.TLSEnabled,
+		"tls_autocert", cfg.TLSAutocert,
+	)
 
-	return cfg
+	return cfg, nil
 }
 
-// MustConnectDBus establishes D-Bus connection and validates service exists
-func MustConnectDBus(ctx context.Context, cfg *config.Config) *dbus.Conn {
+// ConnectDBus establishes D-Bus connection and validates service exists
+// Previously MustConnectDBus - now returns error instead of exiting
+func ConnectDBus(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*dbus.Conn, error) {
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
-		log.Fatalf("Failed to connect to D-Bus: %v", err)
+		logger.Error("dbus_connection_failed",
+			"error", err,
+		)
+		return nil, err
 	}
 
 	// Validate service exists
 	_, err = conn.GetUnitPropertyContext(ctx, cfg.Service+".service", "ActiveState")
 	if err != nil {
-		log.Fatalf("Service '%s' not found in systemd: %v", cfg.Service, err)
+		logger.Error("service_not_found",
+			"service", cfg.Service,
+			"error", err,
+		)
+		conn.Close()
+		return nil, err
 	}
-	log.Printf("Successfully validated service: %s", cfg.Service)
 
-	return conn
+	logger.Info("dbus_connected_and_validated",
+		"service", cfg.Service,
+	)
+
+	return conn, nil
 }
 
 // SetupHTTPServer configures routes and TLS
-func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashboardHTML []byte) *http.Server {
+func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashboardHTML []byte, logger *slog.Logger) *http.Server {
 	// Dashboard route
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if _, err := w.Write(dashboardHTML); err != nil {
-			log.Printf("Error writing dashboard: %v", err)
+			logger.ErrorContext(r.Context(), "dashboard_write_failed",
+				"error", err,
+			)
 		}
 	})
 
-	// Health endpoint
+	// Liveness probe - always responds 200 if process alive
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Readiness probe - responds 200 only if service is ready
+	http.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if serviceCache.IsStale(30 * time.Second) {
+			logger.WarnContext(r.Context(), "readiness_check_stale")
+			http.Error(w, "not ready - stale data", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Health endpoint - service health status
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		handlers.HealthHandler(w, r, serviceCache)
+		handlers.HealthHandler(w, r, serviceCache, logger)
 	})
 
 	// Status API
 	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
-		handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service)
+		handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service, logger)
 	})
 
 	// Prometheus metrics
@@ -85,13 +119,13 @@ func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashb
 	}
 
 	// Configure TLS
-	configureTLS(srv, cfg)
+	configureTLS(srv, cfg, logger)
 
 	return srv
 }
 
 // configureTLS sets up TLS configuration
-func configureTLS(srv *http.Server, cfg *config.Config) {
+func configureTLS(srv *http.Server, cfg *config.Config, logger *slog.Logger) {
 	if cfg.TLSAutocert {
 		certManager := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
@@ -105,13 +139,18 @@ func configureTLS(srv *http.Server, cfg *config.Config) {
 			MinVersion:     tls.VersionTLS12,
 		}
 
-		log.Printf("Let's Encrypt autocert enabled for domain: %s", cfg.TLSAutocertDomain)
+		logger.Info("autocert_enabled",
+			"domain", cfg.TLSAutocertDomain,
+			"cache_path", cfg.TLSAutocertCache,
+		)
 
 		// Start HTTP server for ACME challenges
 		go func() {
-			log.Println("Starting HTTP server on :80 for ACME challenges")
+			logger.Info("acme_challenge_server_starting", "port", 80)
 			if err := http.ListenAndServe(":80", certManager.HTTPHandler(nil)); err != nil {
-				log.Printf("ACME challenge server error: %v", err)
+				logger.ErrorContext(context.Background(), "acme_challenge_server_failed",
+					"error", err,
+				)
 			}
 		}()
 
@@ -125,71 +164,82 @@ func configureTLS(srv *http.Server, cfg *config.Config) {
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			},
 		}
+
+		logger.Info("manual_tls_enabled",
+			"cert_file", cfg.TLSCertFile,
+			"key_file", cfg.TLSKeyFile,
+		)
 	}
 }
 
 // StartBackgroundChecker starts the service monitoring goroutine
-func StartBackgroundChecker(conn *dbus.Conn, cfg *config.Config, serviceCache *cache.ServiceCache) context.CancelFunc {
+func StartBackgroundChecker(conn *dbus.Conn, cfg *config.Config, serviceCache *cache.ServiceCache, logger *slog.Logger) context.CancelFunc {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	interval := time.Duration(cfg.Interval) * time.Second
-	go checker.StartServiceChecker(ctx, conn, cfg.Service, serviceCache, interval)
+	go checker.StartServiceChecker(ctx, conn, cfg.Service, serviceCache, interval, logger)
 
 	return cancel
 }
 
 // StartHTTPServer starts the HTTP/HTTPS server in a goroutine
-func StartHTTPServer(srv *http.Server, cfg *config.Config) {
+func StartHTTPServer(srv *http.Server, cfg *config.Config, logger *slog.Logger) {
 	go func() {
 		var err error
 
 		if cfg.TLSAutocert {
-			log.Printf("Monitoring %s on :%d (HTTPS with Let's Encrypt)", cfg.Service, cfg.Port)
-			log.Printf("Dashboard: https://%s:%d/", cfg.TLSAutocertDomain, cfg.Port)
-			log.Printf("Health: https://%s:%d/health", cfg.TLSAutocertDomain, cfg.Port)
-			log.Printf("API: https://%s:%d/api/status", cfg.TLSAutocertDomain, cfg.Port)
-			log.Printf("Metrics: https://%s:%d/metrics", cfg.TLSAutocertDomain, cfg.Port)
+			logger.Info("http_server_starting",
+				"mode", "https_autocert",
+				"domain", cfg.TLSAutocertDomain,
+				"port", cfg.Port,
+				"service", cfg.Service,
+			)
 			err = srv.ListenAndServeTLS("", "")
 		} else if cfg.TLSEnabled {
-			log.Printf("Monitoring %s on :%d (HTTPS with manual certs)", cfg.Service, cfg.Port)
-			log.Printf("Dashboard: https://localhost:%d/", cfg.Port)
-			log.Printf("Health: https://localhost:%d/health", cfg.Port)
-			log.Printf("API: https://localhost:%d/api/status", cfg.Port)
-			log.Printf("Metrics: https://localhost:%d/metrics", cfg.Port)
+			logger.Info("http_server_starting",
+				"mode", "https_manual",
+				"port", cfg.Port,
+				"service", cfg.Service,
+			)
 			err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 		} else {
-			log.Printf("Monitoring %s on :%d (HTTP)", cfg.Service, cfg.Port)
-			log.Printf("Dashboard: http://localhost:%d/", cfg.Port)
-			log.Printf("Health: http://localhost:%d/health", cfg.Port)
-			log.Printf("API: http://localhost:%d/api/status", cfg.Port)
-			log.Printf("Metrics: http://localhost:%d/metrics", cfg.Port)
+			logger.Info("http_server_starting",
+				"mode", "http",
+				"port", cfg.Port,
+				"service", cfg.Service,
+			)
 			err = srv.ListenAndServe()
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server failed: %v", err)
+			logger.ErrorContext(context.Background(), "http_server_failed",
+				"error", err,
+			)
 		}
 	}()
 }
 
 // WaitForShutdown blocks until shutdown signal, then gracefully stops
-func WaitForShutdown(srv *http.Server, cancelChecker context.CancelFunc) {
+func WaitForShutdown(srv *http.Server, cancelChecker context.CancelFunc, logger *slog.Logger) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	<-sigChan
-	log.Println("Shutdown signal received, gracefully shutting down...")
+	logger.Info("shutdown_signal_received")
 
 	// Stop background checker first
 	cancelChecker()
+	logger.Debug("background_checker_stopped")
 
 	// Shutdown HTTP server with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+		logger.ErrorContext(context.Background(), "server_shutdown_error",
+			"error", err,
+		)
 	}
 
-	log.Println("Server stopped")
+	logger.Info("http_server_stopped")
 }

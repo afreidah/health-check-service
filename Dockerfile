@@ -1,11 +1,6 @@
 # ------------------------------------------------------------------------------
-# Multi-stage Dockerfile - Health Check Service
-#
-# Stage 1: Build using Makefile (ensures consistency with local builds)
-# Stage 2: Create minimal runtime image
-#
-# Build: docker build -t health-checker:latest .
-# Run: docker run --rm -v /var/run/dbus:/var/run/dbus health-checker:latest
+# Update the Build Stage section (around line 15)
+# Add ARG declarations at the top of build stage
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -14,6 +9,9 @@
 FROM golang:1.25.1-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
 
 # Install build dependencies
 RUN apk add --no-cache git make curl
@@ -24,14 +22,19 @@ WORKDIR /build
 # Copy entire project
 COPY . .
 
-# Build using Makefile (handles deps + build)
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make build
+# Build using Makefile with build metadata
+# The Makefile will use VERSION, COMMIT, BUILD_TIME from environment
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    VERSION=$(VERSION) \
+    COMMIT=$(COMMIT) \
+    BUILD_TIME=$(BUILD_TIME) \
+    make build
 
 # Verify binary was created
 RUN test -f bin/health-checker || (echo "Binary not found!" && exit 1)
 
 # ------------------------------------------------------------------------------
-# Runtime Stage
+# Runtime Stage (no changes needed below)
 # ------------------------------------------------------------------------------
 FROM alpine:3.21
 
@@ -41,10 +44,10 @@ LABEL org.opencontainers.image.description="Systemd service health checker with 
 LABEL org.opencontainers.image.authors="alex.freidah@gmail.com"
 LABEL org.opencontainers.image.source="https://github.com/afreidah/health-check-service"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.version="$(VERSION)"
+LABEL org.opencontainers.image.revision="$(COMMIT)"
 
 # Install runtime dependencies
-# ca-certificates: for HTTPS connections
-# dbus: for D-Bus socket communication
 RUN apk add --no-cache ca-certificates dbus
 
 # Create non-root user

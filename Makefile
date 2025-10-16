@@ -260,15 +260,25 @@ docker-build:
 		-t $(FULL_IMAGE):$(DOCKER_TAG) .
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Docker image built: $(FULL_IMAGE):$(DOCKER_TAG)"
 
-# Ensure buildx builder is ready for multi-platform builds
+# Ensure buildx builder is ready for multi-platform builds with insecure registry config
 buildx-ensure:
 	@docker buildx version >/dev/null 2>&1 || { echo "$(COLOR_WARN)[ERR]$(COLOR_RESET) Docker Buildx is not available. Please upgrade Docker."; exit 1; }
 	@docker buildx inspect multiarch-builder >/dev/null 2>&1 || { \
 		echo "$(COLOR_INFO)==> Creating multiarch-builder for multi-platform builds...$(COLOR_RESET)"; \
-		docker buildx create --name multiarch-builder --driver docker-container --use; \
+		mkdir -p .buildkit; \
+		echo "[registry.\"$(REGISTRY)\"]" > .buildkit/buildkitd.toml; \
+		echo "  http = true" >> .buildkit/buildkitd.toml; \
+		echo "  insecure = true" >> .buildkit/buildkitd.toml; \
+		docker buildx create \
+			--name multiarch-builder \
+			--driver docker-container \
+			--driver-opt network=host \
+			--config .buildkit/buildkitd.toml \
+			--use; \
 		docker buildx inspect --bootstrap multiarch-builder >/dev/null; \
-		echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created"; \
+		echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created (network=host, HTTP insecure for $(REGISTRY))"; \
 	}
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Using builder: multiarch-builder"
 
 # Build and push multi-arch image with versioned tag and :latest
 docker-release: buildx-ensure
@@ -362,9 +372,10 @@ clean:
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Clean complete"
 
 clean-all: clean
-	@echo "$(COLOR_INFO)==> Cleaning Go cache and buildkit...$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)==> Cleaning Go cache, buildkit, and builder...$(COLOR_RESET)"
 	@$(GOCMD) clean -cache -modcache
 	@rm -rf .buildkit
+	@docker buildx rm -f multiarch-builder 2>/dev/null || true
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Full clean complete"
 
 # ------------------------------------------------------------------------------

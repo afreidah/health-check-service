@@ -103,6 +103,6 @@ jobs:
     - name: Deployment Summary
       run: |
         echo "✅ Merge pipeline complete"
-        echo "Image: docker-mirror.service.consul:5000/health-checker:${{ github.sha }}"
+        echo "Image: 192.168.68.63:5000/health-checker:${{ github.sha }}"
         echo "Commit: ${{ github.sha }}"
-        echo "Pushed to registry: docker-mirror.service.consul:5000"
+        echo "Pushed to registry: 192.168.68.63.service.consul:5000"

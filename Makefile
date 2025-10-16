@@ -305,6 +305,7 @@ docker-buildx: buildx-setup
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch build complete (loaded into local docker as host arch only)"
 
 # Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
+# Build and PUSH multi-arch image (tags: $(DOCKER_TAG), latest) - may fail on private HTTP/DNS
 docker-release: buildx-setup
 	@echo "$(COLOR_INFO)==> Building & pushing MULTI-ARCH image (HTTP/insecure registry)...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
@@ -317,38 +318,19 @@ docker-release: buildx-setup
 		.
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG) and :latest"
 
-# Reliable path: build each arch, push via daemon, then compose + push manifest via Docker CLI
+# Build and push multi-arch image directly with buildx (simple and reliable)
 docker-release-daemon: buildx-setup
-	@set -e; \
-	echo "$(COLOR_INFO)==> Building $(ARCH_AMD) (--load) → $(IMG_AMD)$(COLOR_RESET)"; \
-	docker buildx build --platform $(ARCH_AMD) -t $(IMG_AMD) --load .; \
-	echo "$(COLOR_INFO)==> Building $(ARCH_ARM) (--load) → $(IMG_ARM)$(COLOR_RESET)"; \
-	docker buildx build --platform $(ARCH_ARM) -t $(IMG_ARM) --load .; \
-	echo "$(COLOR_INFO)==> Pushing arch images via Docker daemon...$(COLOR_RESET)"; \
-	docker push $(IMG_AMD); \
-	docker push $(IMG_ARM); \
-	echo "$(COLOR_INFO)==> Pulling images back for manifest creation...$(COLOR_RESET)"; \
-	docker pull $(IMG_AMD); \
-	docker pull $(IMG_ARM); \
-	echo "$(COLOR_INFO)==> Creating multi-arch manifest for :$(DOCKER_TAG)$(COLOR_RESET)"; \
-	docker manifest rm $(FULL_IMAGE):$(DOCKER_TAG) 2>/dev/null || true; \
-	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) \
-		$(IMG_AMD) \
-		$(IMG_ARM); \
-	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG); \
-	echo "$(COLOR_INFO)==> Creating multi-arch manifest for :latest$(COLOR_RESET)"; \
-	docker tag $(IMG_AMD) $(IMG_LATEST_AMD); \
-	docker tag $(IMG_ARM) $(IMG_LATEST_ARM); \
-	docker push $(IMG_LATEST_AMD); \
-	docker push $(IMG_LATEST_ARM); \
-	docker pull $(IMG_LATEST_AMD); \
-	docker pull $(IMG_LATEST_ARM); \
-	docker manifest rm $(FULL_IMAGE):latest 2>/dev/null || true; \
-	docker manifest create $(FULL_IMAGE):latest \
-		$(IMG_LATEST_AMD) \
-		$(IMG_LATEST_ARM); \
-	docker manifest push $(FULL_IMAGE):latest; \
-	echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch manifests pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
+	@echo "$(COLOR_INFO)==> Building and pushing multi-arch image...$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)     Platforms: $(PLATFORMS)$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)     Tags: $(DOCKER_TAG), latest$(COLOR_RESET)"
+	docker buildx build \
+		--builder multiarch-builder \
+		--platform $(PLATFORMS) \
+		--tag $(FULL_IMAGE):$(DOCKER_TAG) \
+		--tag $(FULL_IMAGE):latest \
+		--push \
+		.
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image pushed: $(FULL_IMAGE):$(DOCKER_TAG), latest"
 
 docker-scan-trivy-config: install-trivy
 	@echo "$(COLOR_INFO)==> Scanning Dockerfile with Trivy (config)...$(COLOR_RESET)"

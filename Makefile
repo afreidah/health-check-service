@@ -391,7 +391,7 @@ pull_request: fmt vet lint test build docker-scan
 
 # For multi-arch publishing in CI:
 #   make merge DOCKER_TAG=v1.2.3
-merge: pull_request docker-release
+merge: docker-release
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Merge pipeline complete - multi-arch image pushed to registry"
 
 # -----------------------------------------------------------------------

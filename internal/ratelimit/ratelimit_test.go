@@ -167,7 +167,9 @@ func TestMiddleware_AllowsWithinLimit(t *testing.T) {
 
 	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			t.Errorf("Could not write header: %v", err)
+		}
 	}))
 
 	req := httptest.NewRequest("GET", "/test", nil)

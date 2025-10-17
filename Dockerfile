@@ -1,12 +1,20 @@
-# ------------------------------------------------------------------------------
-# Multi-stage Dockerfile - Health Check Service
+# -----------------------------------------------------------------------
+# Multi-Stage Docker Build - Health Check Service
+# -----------------------------------------------------------------------
 #
-# Stage 1: Build using Makefile (ensures consistency with local builds)
-# Stage 2: Create minimal runtime image
+# Build Stage (Stage 1):
+#   Uses Go 1.25.1-Alpine to compile the application. The Makefile ensures
+#   build consistency between local development and containerized builds.
 #
-# Build: docker build -t health-checker:latest .
-# Run: docker run --rm -v /var/run/dbus:/var/run/dbus health-checker:latest
-# ------------------------------------------------------------------------------
+# Runtime Stage (Stage 2):
+#   Minimal Alpine image with security hardening: non-root user, read-only
+#   D-Bus mount, stripped binaries. Final image ~20MB including dependencies.
+#
+# Usage:
+#   Build: docker build -t health-checker:latest .
+#   Run:   docker run --rm -v /var/run/dbus:/var/run/dbus:ro health-checker:latest
+#
+# -----------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # Build Stage

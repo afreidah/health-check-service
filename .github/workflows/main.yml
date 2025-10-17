@@ -1,14 +1,17 @@
-# ------------------------------------------------------------------------------
-# GitHub Actions Workflow - CI/CD Pipeline
+# -----------------------------------------------------------------------
+# GitHub Actions CI/CD Workflow
+# -----------------------------------------------------------------------
 #
-# PR Pipeline (pull_request):
-# - Code formatting, linting, tests, build, security scans
+# Pipeline Stages:
+#   PR Pipeline (pull_request to main):
+#     - Code formatting, linting, tests, build, security scans
 #
-# Merge Pipeline (push to main):
-# - Re-runs all PR checks
-# - Tags Docker image with commit SHA
-# - Pushes to container registry
-# ------------------------------------------------------------------------------
+#   Merge Pipeline (push to main):
+#     - Re-runs all PR checks
+#     - Builds and tags multi-arch Docker images (AMD64, ARM64)
+#     - Pushes images to container registry with commit SHA
+#
+# -----------------------------------------------------------------------
 
 name: CI/CD Pipeline
 

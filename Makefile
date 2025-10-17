@@ -282,49 +282,48 @@ buildx-ensure:
 	@docker buildx inspect --bootstrap multiarch-builder >/dev/null
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) multiarch-builder created with insecure HTTP for $(REGISTRY)"
 
-# Build and push multi-arch image - build each locally, push, then create manifest
+# Build and push multi-arch image
 docker-release:
 	@echo "$(COLOR_INFO)==> Building multi-arch image...$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Image: $(FULL_IMAGE)$(COLOR_RESET)"
 	@echo "$(COLOR_INFO)     Tags: $(DOCKER_TAG), latest$(COLOR_RESET)"
 	
 	# Build AMD64 locally
-	@echo "$(COLOR_INFO)==> Building AMD64 locally...$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)==> Building AMD64...$(COLOR_RESET)"
 	GOOS=linux GOARCH=amd64 $(GOBUILD) $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
 	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg DATE=$(DATE) \
-		--file Dockerfile \
 		-t $(FULL_IMAGE):$(DOCKER_TAG)-amd64 \
 		.
 	docker push $(FULL_IMAGE):$(DOCKER_TAG)-amd64
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) AMD64 image pushed"
+	docker tag $(FULL_IMAGE):$(DOCKER_TAG)-amd64 $(FULL_IMAGE):latest-amd64
+	docker push $(FULL_IMAGE):latest-amd64
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) AMD64 pushed"
 	
 	# Build ARM64 locally
-	@echo "$(COLOR_INFO)==> Building ARM64 locally...$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)==> Building ARM64...$(COLOR_RESET)"
 	GOOS=linux GOARCH=arm64 $(GOBUILD) $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
 	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg DATE=$(DATE) \
-		--file Dockerfile \
 		-t $(FULL_IMAGE):$(DOCKER_TAG)-arm64 \
 		.
 	docker push $(FULL_IMAGE):$(DOCKER_TAG)-arm64
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) ARM64 image pushed"
+	docker tag $(FULL_IMAGE):$(DOCKER_TAG)-arm64 $(FULL_IMAGE):latest-arm64
+	docker push $(FULL_IMAGE):latest-arm64
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) ARM64 pushed"
 	
-	# Create and push manifests
-	@echo "$(COLOR_INFO)==> Creating manifests...$(COLOR_RESET)"
-	docker manifest rm $(FULL_IMAGE):$(DOCKER_TAG) 2>/dev/null || true
-	docker manifest rm $(FULL_IMAGE):latest 2>/dev/null || true
-	docker manifest create $(FULL_IMAGE):$(DOCKER_TAG) $(FULL_IMAGE):$(DOCKER_TAG)-amd64 $(FULL_IMAGE):$(DOCKER_TAG)-arm64
-	docker manifest create $(FULL_IMAGE):latest $(FULL_IMAGE):$(DOCKER_TAG)-amd64 $(FULL_IMAGE):$(DOCKER_TAG)-arm64
-	docker manifest push $(FULL_IMAGE):$(DOCKER_TAG)
-	docker manifest push $(FULL_IMAGE):latest
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Manifests pushed"
+	# Tag local images as the final manifest names and push
+	@echo "$(COLOR_INFO)==> Tagging as manifest names...$(COLOR_RESET)"
+	docker tag $(FULL_IMAGE):$(DOCKER_TAG)-amd64 $(FULL_IMAGE):$(DOCKER_TAG)
+	docker tag $(FULL_IMAGE):$(DOCKER_TAG)-arm64 $(FULL_IMAGE):latest
+	docker push $(FULL_IMAGE):$(DOCKER_TAG)
+	docker push $(FULL_IMAGE):latest
 	
-	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Multi-arch image complete"
+	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Published: $(FULL_IMAGE):$(DOCKER_TAG) and $(FULL_IMAGE):latest"
 
 docker-scan-checkov:
 	@echo "$(COLOR_INFO)==> Scanning Dockerfile with Checkov...$(COLOR_RESET)"

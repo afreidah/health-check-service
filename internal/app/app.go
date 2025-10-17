@@ -29,6 +29,7 @@ import (
 	"github.com/afreidah/health-check-service/internal/handlers"
 	"github.com/afreidah/health-check-service/internal/logging"
 	"github.com/afreidah/health-check-service/internal/metrics"
+	"github.com/afreidah/health-check-service/internal/ratelimit"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme/autocert"
@@ -113,38 +114,123 @@ func MustConnectDBus(ctx context.Context, cfg *config.Config) *dbus.Conn {
 }
 
 // -----------------------------------------------------------------------
+// Rate Limited Handler
+// -----------------------------------------------------------------------
+
+// RateLimitedHandler wraps an HTTP handler with per-IP rate limiting.
+type RateLimitedHandler struct {
+	handler  http.Handler
+	limiter  *ratelimit.Manager
+	endpoint string
+}
+
+// ServeHTTP implements the http.Handler interface with rate limiting applied.
+func (h *RateLimitedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ip := ratelimit.GetIP(r)
+
+	if !h.limiter.Allow(ip) {
+		// Include rate limit info in response headers
+		w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%.0f", h.limiter.GetRate()))
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("Retry-After", "1")
+
+		slog.Warn("rate limit exceeded",
+			"ip", ip,
+			"endpoint", h.endpoint,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+
+	// Calculate approximate remaining tokens for header
+	tokens := h.limiter.GetTokens(ip)
+	w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%.0f", h.limiter.GetRate()))
+	w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%.0f", tokens))
+
+	h.handler.ServeHTTP(w, r)
+}
+
+// -----------------------------------------------------------------------
 // HTTP Server Setup
 // -----------------------------------------------------------------------
 
 // SetupHTTPServer initializes the HTTP server with routes for the dashboard,
-// health check endpoint, status API, and Prometheus metrics. TLS settings
-// are applied based on configuration. The server is not started; this
-// function only performs configuration and returns the server instance for
-// later startup.
+// health check endpoint, status API, and Prometheus metrics. Rate limiting
+// is applied per endpoint with appropriate limits. TLS settings are applied
+// based on configuration. The server is not started; this function only
+// performs configuration and returns the server instance for later startup.
 func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashboardHTML []byte) *http.Server {
+	// Create rate limiters for different endpoint categories
+
+	// Health endpoint is critical for monitoring - very permissive
+	// 100 req/sec, burst 200 = thousands per minute
+	// Prometheus, load balancers, multiple monitoring tools won't hit this
+	healthLimiter := ratelimit.New(100, 200)
+
+	// Dashboard and API - moderate for human/UI usage
+	// 10 req/sec, burst 20
+	// Dashboard polls every 2s = 0.5 req/sec, humans max out at 2-5 req/sec
+	dashboardLimiter := ratelimit.New(10, 20)
+
+	// Metrics endpoint - Prometheus-specific
+	// 2 req/sec, burst 10
+	// Prometheus typically scrapes once every 15-30 seconds = 0.033 req/sec
+	// Burst handles multiple Prometheus instances
+	metricsLimiter := ratelimit.New(2, 10)
+
+	// Create mux for explicit handler registration
+	mux := http.NewServeMux()
+
 	// Dashboard route serves the embedded React frontend
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(dashboardHTML); err != nil {
-			slog.Error("error writing dashboard", "err", err)
-		}
+	mux.Handle("/", &RateLimitedHandler{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if _, err := w.Write(dashboardHTML); err != nil {
+				slog.Error("error writing dashboard", "err", err)
+			}
+		}),
+		limiter:  dashboardLimiter,
+		endpoint: "dashboard",
 	})
 
 	// Health endpoint returns service status with appropriate HTTP status code
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		handlers.HealthHandler(w, r, serviceCache)
+	mux.Handle("/health", &RateLimitedHandler{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlers.HealthHandler(w, r, serviceCache)
+		}),
+		limiter:  healthLimiter,
+		endpoint: "health",
 	})
 
 	// Status API returns detailed health information as JSON
-	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
-		handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service)
+	mux.Handle("/api/status", &RateLimitedHandler{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service)
+		}),
+		limiter:  dashboardLimiter,
+		endpoint: "api_status",
 	})
 
 	// Metrics endpoint exports Prometheus-formatted metrics
-	http.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", &RateLimitedHandler{
+		handler:  promhttp.Handler(),
+		limiter:  metricsLimiter,
+		endpoint: "metrics",
+	})
+
+	// Log rate limiting configuration
+	loga.Info("rate limiting configured",
+		"health_limit", "100 req/sec, burst 200",
+		"dashboard_limit", "10 req/sec, burst 20",
+		"metrics_limit", "2 req/sec, burst 10",
+	)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,

@@ -222,13 +222,15 @@ func TestValidateHTTPOnly(t *testing.T) {
 
 // TestValidateWithAutocert verifies a valid autocert config passes validation.
 func TestValidateWithAutocert(t *testing.T) {
+	tmpDir := t.TempDir() // Use temp directory for testing
+
 	cfg := &Config{
 		Port:              443,
 		Service:           "nginx",
 		Interval:          10,
 		TLSAutocert:       true,
 		TLSAutocertDomain: "example.com",
-		TLSAutocertCache:  "/var/cache/health-checker",
+		TLSAutocertCache:  tmpDir,
 		TLSAutocertEmail:  "admin@example.com",
 	}
 

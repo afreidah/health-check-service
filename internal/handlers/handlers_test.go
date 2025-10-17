@@ -118,11 +118,11 @@ func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 // HTTP Method Tests
 // -----------------------------------------------------------------------
 
-// TestHealthHandlerWithDifferentHTTPMethods verifies the handler works with
-// various HTTP methods. While GET is standard for health checks, some
-// monitoring systems or load balancers may use HEAD or OPTIONS.
+// TestHealthHandlerWithDifferentHTTPMethods verifies the handler accepts
+// GET and HEAD requests. These are the appropriate methods for health check
+// endpoints per RFC 7231.
 func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
-	methods := []string{"GET", "POST", "HEAD", "OPTIONS"}
+	methods := []string{"GET", "HEAD"} // Only these are allowed
 
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
@@ -136,6 +136,34 @@ func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 
 			if w.Code != http.StatusOK {
 				t.Errorf("Method %s: expected status %d, got %d", method, http.StatusOK, w.Code)
+			}
+		})
+	}
+}
+
+// TestHealthHandlerRejectsUnsupportedMethods verifies POST, OPTIONS, etc.
+// are correctly rejected with 405 Method Not Allowed.
+func TestHealthHandlerRejectsUnsupportedMethods(t *testing.T) {
+	unsupportedMethods := []string{"POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+
+	c := cache.New()
+	c.UpdateStatus(http.StatusOK, "active")
+
+	for _, method := range unsupportedMethods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/health", nil)
+			w := httptest.NewRecorder()
+
+			HealthHandler(w, req, c)
+
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("Method %s: expected status %d, got %d",
+					method, http.StatusMethodNotAllowed, w.Code)
+			}
+
+			// Verify Allow header is set
+			if w.Header().Get("Allow") == "" {
+				t.Errorf("Method %s: Allow header should be set", method)
 			}
 		})
 	}

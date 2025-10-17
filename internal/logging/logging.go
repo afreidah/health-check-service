@@ -1,11 +1,11 @@
-// =============================================================================
+// -----------------------------------------------------------------------
 // Structured Logging Configuration
-// =============================================================================
+// -----------------------------------------------------------------------
 //
-// Package logging provides centralized structured logging configuration via slog.
-// All components use a single logger instance configured at startup and set as
-// the default. Supports JSON output for log aggregation systems or text for
-// local development.
+// Package logging provides centralized structured logging configuration via
+// slog. All components use a single logger instance configured at startup and
+// set as the default. Supports JSON output for log aggregation systems or text
+// for local development.
 //
 // Configuration via environment variables:
 //   - LOG_LEVEL: debug|info|warn|error (default: info)
@@ -13,7 +13,7 @@
 //   - LOG_SOURCE: true|1 to include file:line (default: false)
 //   - LOG_TAGS: comma-separated key=value pairs added to all logs
 //
-// =============================================================================
+// -----------------------------------------------------------------------
 
 package logging
 
@@ -24,9 +24,9 @@ import (
 	"strings"
 )
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Type Definitions
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // Options encapsulates logging configuration.
 type Options struct {
@@ -36,9 +36,9 @@ type Options struct {
 	AddSource bool              // Include file:line in each log entry
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Logger Initialization
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // Init creates and installs a logger with the given configuration.
 // The logger is set as the default via slog.SetDefault.
@@ -67,9 +67,9 @@ func Init(opts Options) *slog.Logger {
 	return logger
 }
 
-// InitFromEnv creates a logger from environment variables.
-// Additional tags passed in extraTags are merged with environment tags
-// (extraTags take precedence on conflict).
+// InitFromEnv creates a logger from environment variables. Additional tags
+// passed in extraTags are merged with environment tags (extraTags take
+// precedence on conflict).
 //
 // Environment Variables:
 //   - LOG_LEVEL: debug|info|warn|error (default: info)
@@ -104,12 +104,12 @@ func InitFromEnv(extraTags map[string]string) *slog.Logger {
 	})
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Helper Functions
-// =============================================================================
+// -----------------------------------------------------------------------
 
-// parseTags converts comma-separated key=value string to a map.
-// Whitespace around keys and values is trimmed. Empty pairs are skipped.
+// parseTags converts comma-separated key=value string to a map. Whitespace
+// around keys and values is trimmed. Empty pairs are skipped.
 //
 // Example: "env=prod,team=platform" returns map[env:prod team:platform]
 func parseTags(s string) map[string]string {
@@ -131,16 +131,8 @@ func parseTags(s string) map[string]string {
 	return out
 }
 
-// WithRequest returns a logger enriched with request-specific tags.
-// Use this in request handlers to add correlation fields like request_id.
-//
-// Example:
-//
-//	logger := logging.WithRequest(ctx, slog.Default(), map[string]any{
-//	    "request_id": id,
-//	    "method": r.Method,
-//	})
-//	logger.Info("request received")  // Includes all tags automatically
+// WithRequest returns a logger enriched with request-specific tags. Use this
+// in request handlers to add correlation fields like request_id.
 func WithRequest(_ context.Context, base *slog.Logger, tags map[string]any) *slog.Logger {
 	attrs := make([]any, 0, len(tags)*2)
 	for k, v := range tags {

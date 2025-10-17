@@ -1,16 +1,14 @@
-// Package app provides the core application orchestration for the Health Check Service.
+// -----------------------------------------------------------------------
+// Application Orchestration and Lifecycle
+// -----------------------------------------------------------------------
 //
-// This package is responsible for coordinating all major service components:
-// structured logging initialization, HTTP server configuration with TLS support,
-// D-Bus connectivity for systemd service monitoring, and graceful shutdown sequences.
-// It also implements watchdog functionality to detect and alert on checker goroutine
-// health degradation.
+// Package app provides core application orchestration for the health check
+// service. It coordinates configuration loading, D-Bus connectivity, HTTP
+// server setup, background checker lifecycle, and graceful shutdown sequences.
+// All major components are initialized and their lifecycles managed here.
 //
-// The service follows a clean separation of concerns: HTTP routing is delegated to
-// handlers, systemd queries to the checker package, and data persistence to the cache.
-// Prometheus metrics are centrally defined in the metrics package. The app module
-// acts as the composition root, wiring these components together and managing their
-// lifecycle.
+// -----------------------------------------------------------------------
+
 package app
 
 import (
@@ -45,14 +43,13 @@ var (
 
 var loga = slog.Default().With("component", "app")
 
+// -----------------------------------------------------------------------
 // Configuration & D-Bus Setup
-//
-// This section handles initial application configuration loading and validation,
-// followed by establishing the D-Bus system connection required for systemd queries.
+// -----------------------------------------------------------------------
 
 // MustLoadConfig loads application configuration from environment variables
 // and performs validation. If configuration is invalid or incomplete, the
-// service will log an error and exit with status code 1. The logger is
+// service logs an error and exits with status code 1. The logger is
 // initialized twice: first with generic metadata, then re-initialized with
 // the monitored service name as a permanent log context field.
 func MustLoadConfig() *config.Config {
@@ -95,9 +92,9 @@ func MustLoadConfig() *config.Config {
 }
 
 // MustConnectDBus establishes a connection to the systemd D-Bus service and
-// validates that the target service exists in the current systemd configuration.
-// If the connection fails or the service cannot be found, the application exits
-// with status code 1 after logging the error condition.
+// validates that the target service exists in the current systemd
+// configuration. If the connection fails or the service cannot be found, the
+// application exits with status code 1 after logging the error condition.
 func MustConnectDBus(ctx context.Context, cfg *config.Config) *dbus.Conn {
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
@@ -115,17 +112,15 @@ func MustConnectDBus(ctx context.Context, cfg *config.Config) *dbus.Conn {
 	return conn
 }
 
+// -----------------------------------------------------------------------
 // HTTP Server Setup
-//
-// This section configures the HTTP server with all required routes and TLS settings.
-// Route handlers are registered for the dashboard, health checks, status API, and
-// Prometheus metrics export. TLS configuration supports both manual certificate
-// files and automated Let's Encrypt provisioning via ACME.
+// -----------------------------------------------------------------------
 
 // SetupHTTPServer initializes the HTTP server with routes for the dashboard,
-// health check endpoint, status API, and Prometheus metrics. TLS settings are
-// applied based on configuration. The server is not started; this function only
-// performs configuration and returns the server instance for later startup.
+// health check endpoint, status API, and Prometheus metrics. TLS settings
+// are applied based on configuration. The server is not started; this
+// function only performs configuration and returns the server instance for
+// later startup.
 func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashboardHTML []byte) *http.Server {
 	// Dashboard route serves the embedded React frontend
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -204,11 +199,9 @@ func configureTLS(srv *http.Server, cfg *config.Config) {
 	}
 }
 
+// -----------------------------------------------------------------------
 // Background Checker Setup
-//
-// This section initializes and manages the background goroutine responsible for
-// periodically querying systemd service status. A separate watchdog goroutine
-// monitors checker health and updates Prometheus metrics.
+// -----------------------------------------------------------------------
 
 // StartBackgroundChecker launches the background service monitoring goroutine
 // and the checker health watchdog. It returns a context cancellation function
@@ -235,10 +228,10 @@ func StartBackgroundChecker(
 
 // startCheckerWatchdog periodically checks whether the background checker
 // goroutine is responding and updating health information. If the checker
-// fails to update within the expected time window, the watchdog logs an alert,
-// sets the checker health metric to 0, and continues monitoring for recovery.
-// The watchdog checks every 10 seconds and considers the checker unhealthy if
-// its last update exceeds 2x the configured check interval.
+// fails to update within the expected time window, the watchdog logs an
+// alert, sets the checker health metric to 0, and continues monitoring for
+// recovery. The watchdog checks every 10 seconds and considers the checker
+// unhealthy if its last update exceeds 2x the configured check interval.
 //
 // Metrics Updated:
 //   - health_checker_healthy: Set to 1 when checker is responsive, 0 when stuck
@@ -293,17 +286,15 @@ func startCheckerWatchdog(
 	}
 }
 
+// -----------------------------------------------------------------------
 // HTTP Server Start
-//
-// This section launches the HTTP/HTTPS server in a background goroutine.
-// The server operates in one of three modes: Let's Encrypt ACME with TLS,
-// manual certificate TLS, or plain HTTP.
+// -----------------------------------------------------------------------
 
 // StartHTTPServer launches the HTTP/HTTPS server in a background goroutine.
 // The server mode (HTTP, TLS with manual certs, or TLS with Let's Encrypt)
 // is determined by the configuration. Startup information is logged to assist
-// with operational debugging. If the server fails to start, an error is logged
-// and the process exits with status code 1.
+// with operational debugging. If the server fails to start, an error is
+// logged and the process exits with status code 1.
 func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 	go func() {
 		var err error
@@ -346,18 +337,17 @@ func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 	}()
 }
 
+// -----------------------------------------------------------------------
 // Graceful Shutdown
-//
-// This section implements a coordinated shutdown sequence that stops the
-// background checker and HTTP server in phases, with timeout enforcement
-// and proper resource cleanup. The shutdown is triggered by SIGTERM or SIGINT.
+// -----------------------------------------------------------------------
 
-// WaitForShutdown blocks until receiving a termination signal (SIGTERM or SIGINT),
-// then initiates graceful shutdown of the checker and HTTP server. Shutdown
-// follows a phased approach: the background checker is stopped first (5s timeout),
-// followed by the HTTP server (remaining time from 30s overall budget). If shutdown
-// exceeds the overall 30-second deadline, the server is forcefully closed. This
-// function logs all shutdown phases for operational observability.
+// WaitForShutdown blocks until receiving a termination signal (SIGTERM or
+// SIGINT), then initiates graceful shutdown of the checker and HTTP server.
+// Shutdown follows a phased approach: the background checker is stopped first
+// (5s timeout), followed by the HTTP server (remaining time from 30s overall
+// budget). If shutdown exceeds the overall 30-second deadline, the server is
+// forcefully closed. This function logs all shutdown phases for operational
+// observability.
 func WaitForShutdown(srv *http.Server, cancelChecker context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)

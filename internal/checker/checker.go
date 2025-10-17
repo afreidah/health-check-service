@@ -1,13 +1,13 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Background Service Checker
-// -----------------------------------------------------------------------------
-// Background health-check loop for systemd-managed services:
-// - Periodic ActiveState polling via D-Bus
-// - Thread-safe cache updates + Prometheus metrics
-// - Exponential backoff reconnection to D-Bus with proper shutdown handling
-// - Context-aware graceful shutdown
-// - Checker health monitoring
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+//
+// Package checker provides periodic healthchecking of systemd services via
+// D-Bus with automatic reconnection and exponential backoff. It updates the
+// shared cache and exports Prometheus metrics. Checker health is tracked
+// separately to detect stuck or unresponsive goroutines.
+//
+// -----------------------------------------------------------------------
 
 package checker
 
@@ -24,36 +24,33 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 )
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Systemd State Constants
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 const (
-	StateActive       = "active"       // Service is running
-	StateInactive     = "inactive"     // Service is stopped
-	StateFailed       = "failed"       // Service has failed
-	StateActivating   = "activating"   // Service is starting up
-	StateDeactivating = "deactivating" // Service is shutting down
-	StateReloading    = "reloading"    // Service is reloading config
+	StateActive       = "active"
+	StateInactive     = "inactive"
+	StateFailed       = "failed"
+	StateActivating   = "activating"
+	StateDeactivating = "deactivating"
+	StateReloading    = "reloading"
 )
 
-// -----------------------------------------------------------------------------
-// Reconnection Constants
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Reconnection Configuration
+// -----------------------------------------------------------------------
 
 const (
 	initialRetryDelay = 1 * time.Second
 	maxRetryDelay     = 30 * time.Second
 	backoffMultiplier = 2
-
-	// CHANGED: Add timeout for individual D-Bus checks
-	// If a check takes longer than this, something is wrong
-	checkTimeout = 5 * time.Second
+	checkTimeout      = 5 * time.Second
 )
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // State Mapping
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 var stateToStatusCode = map[string]int{
 	StateActive:       http.StatusOK,
@@ -66,50 +63,59 @@ var stateToStatusCode = map[string]int{
 
 var logc = slog.Default().With("component", "checker")
 
-// =============================================================================
-// CHANGED: Add CheckerHealth type to track checker health
-// =============================================================================
-// This allows the main app to detect if the checker is stuck/deadlocked
+// -----------------------------------------------------------------------
+// Checker Health Tracking
+// -----------------------------------------------------------------------
+
+// CheckerHealth tracks whether the background checker goroutine is actively
+// responding and updating the cache. This allows the watchdog to detect
+// stuck or deadlocked checker goroutines that have stopped making progress.
 type CheckerHealth struct {
 	lastSuccessfulCheck time.Time
 	mu                  sync.RWMutex
 }
 
+// NewCheckerHealth creates a new CheckerHealth tracker initialized to the
+// current time (checker just started).
 func NewCheckerHealth() *CheckerHealth {
 	return &CheckerHealth{
 		lastSuccessfulCheck: time.Now(),
 	}
 }
 
-// RecordSuccess marks that a check completed successfully
+// RecordSuccess marks that a check completed successfully and updates the
+// timestamp. Called after each successful cache update.
 func (ch *CheckerHealth) RecordSuccess() {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	ch.lastSuccessfulCheck = time.Now()
 }
 
-// IsHealthy returns true if a check completed within the expected interval
+// IsHealthy returns whether the checker has responded within maxAge of the
+// current time. If the last successful check exceeds maxAge, the checker is
+// considered stuck or unresponsive.
 func (ch *CheckerHealth) IsHealthy(maxAge time.Duration) bool {
 	ch.mu.RLock()
 	defer ch.mu.RUnlock()
 	return time.Since(ch.lastSuccessfulCheck) < maxAge
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
+// Periodic Checker Loop
+// -----------------------------------------------------------------------
 
-// StartServiceChecker launches a goroutine that periodically polls the given
-// systemd unit and updates the shared cache until ctx is cancelled.
+// StartServiceChecker runs a periodic loop that polls the systemd service
+// status and updates the shared cache. The loop respects context cancellation
+// for graceful shutdown and automatically reconnects to D-Bus with exponential
+// backoff on connection failures.
 //
-// CHANGED: Added checkerHealth parameter to track checker health
-// This allows detecting if the checker goroutine is stuck
-//
-// Params:
-//   - ctx: cancellation context (NOW PROPERLY RESPECTED)
+// Parameters:
+//   - ctx: cancellation context; loop exits when done
 //   - conn: initial D-Bus connection
-//   - service: systemd unit name
-//   - cache: shared status cache
-//   - interval: polling period
-//   - checkerHealth: tracks if checker is responding
+//   - service: systemd unit name (without .service suffix)
+//   - cache: shared cache for status updates
+//   - interval: time between checks
+//   - checkerHealth: health tracker updated on successful checks
 func StartServiceChecker(
 	ctx context.Context,
 	conn *dbus.Conn,
@@ -128,7 +134,7 @@ func StartServiceChecker(
 		}
 	}()
 
-	// Perform immediate check on startup
+	// Perform immediate check on startup to ensure cache is populated quickly
 	currentConn = CheckAndUpdateCacheWithReconnect(ctx, currentConn, service, cache)
 	if currentConn != nil {
 		checkerHealth.RecordSuccess()
@@ -137,13 +143,12 @@ func StartServiceChecker(
 	for {
 		select {
 		case <-ticker.C:
-			// CHANGED: Use a timeout context for the check itself
-			// This ensures that even if D-Bus hangs, we don't block forever
+			// Use a timeout context for the check to prevent D-Bus hangs
+			// from blocking indefinitely
 			checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 			currentConn = CheckAndUpdateCacheWithReconnect(checkCtx, currentConn, service, cache)
 			cancel()
 
-			// CHANGED: Record successful check
 			if currentConn != nil {
 				checkerHealth.RecordSuccess()
 			}
@@ -155,13 +160,16 @@ func StartServiceChecker(
 	}
 }
 
-// =============================================================================
-// CheckAndUpdateCacheWithReconnect - FIXED ISSUES
-// =============================================================================
-// Changes:
-// 1. Properly respects context cancellation (checked BEFORE time.After)
-// 2. Context parameter is now used instead of hardcoded Background()
-// 3. Better logging for reconnection attempts
+// -----------------------------------------------------------------------
+// D-Bus Connection Management
+// -----------------------------------------------------------------------
+
+// CheckAndUpdateCacheWithReconnect attempts a cache update with the current
+// connection. On failure, it closes the connection and enters a reconnection
+// loop with exponential backoff. The context is checked before each backoff
+// wait to allow graceful shutdown during reconnection attempts.
+//
+// Returns the active D-Bus connection (or nil if ctx is cancelled).
 func CheckAndUpdateCacheWithReconnect(
 	ctx context.Context,
 	conn *dbus.Conn,
@@ -170,7 +178,7 @@ func CheckAndUpdateCacheWithReconnect(
 ) *dbus.Conn {
 	// Try the check with current connection
 	if err := CheckAndUpdateCache(ctx, conn, service, cache); err == nil {
-		return conn // Success
+		return conn
 	}
 
 	logc.Warn("D-Bus connection error; attempting reconnection")
@@ -185,8 +193,7 @@ func CheckAndUpdateCacheWithReconnect(
 	retryDelay := initialRetryDelay
 
 	for {
-		// CHANGED: Check context FIRST before any operation
-		// This ensures graceful shutdown isn't blocked by time.After
+		// Check context before any wait operation to allow graceful shutdown
 		select {
 		case <-ctx.Done():
 			logc.Info("shutdown requested during D-Bus reconnection",
@@ -194,7 +201,6 @@ func CheckAndUpdateCacheWithReconnect(
 				"reason", ctx.Err().Error())
 			return nil
 		default:
-			// Continue with reconnection attempt
 		}
 
 		// Attempt to establish new connection
@@ -206,7 +212,7 @@ func CheckAndUpdateCacheWithReconnect(
 
 			// Verify connection works with immediate check
 			if checkErr := CheckAndUpdateCache(ctx, newConn, service, cache); checkErr == nil {
-				return newConn // Success!
+				return newConn
 			}
 
 			// Check failed, close this connection and retry
@@ -220,18 +226,15 @@ func CheckAndUpdateCacheWithReconnect(
 				"error", err.Error())
 		}
 
-		// CHANGED: Use select to check context BEFORE waiting
-		// This is the critical fix for graceful shutdown
+		// Wait before retry with context awareness for shutdown
 		select {
 		case <-ctx.Done():
-			// Shutdown during backoff - stop immediately
 			logc.Info("shutdown requested during reconnection backoff",
 				"attempt", attemptNum,
 				"reason", ctx.Err().Error())
 			return nil
 
 		case <-time.After(retryDelay):
-			// Backoff wait completed, try again
 			logc.Debug("reconnection backoff completed",
 				"attempt", attemptNum,
 				"next_delay", (retryDelay * backoffMultiplier).String())
@@ -246,24 +249,25 @@ func CheckAndUpdateCacheWithReconnect(
 	}
 }
 
-// =============================================================================
-// CheckAndUpdateCache - FIXED CONTEXT HANDLING
-// =============================================================================
-// Changes:
-// 1. Now accepts context parameter instead of using context.Background()
-// 2. Context is passed to D-Bus call so it can be cancelled
-// 3. Respects timeouts and shutdown signals
+// -----------------------------------------------------------------------
+// Cache Update
+// -----------------------------------------------------------------------
+
+// CheckAndUpdateCache queries the systemd service status via D-Bus and
+// updates the cache with the current state and HTTP status code. The
+// provided context is used for the D-Bus call to respect timeouts and
+// cancellation.
+//
+// Returns an error if the D-Bus query fails or produces unexpected data.
 func CheckAndUpdateCache(
 	ctx context.Context,
 	conn *dbus.Conn,
 	service string,
 	cache *cache.ServiceCache,
 ) error {
-	// CHANGED: Use provided context instead of Background()
-	// This respects cancellation during shutdown and respects timeouts
+	// Query service ActiveState from systemd via D-Bus
 	prop, err := conn.GetUnitPropertyContext(ctx, service+".service", "ActiveState")
 	if err != nil {
-		// CHANGED: Better error logging with context info
 		logc.Error("error checking service via D-Bus",
 			"service", service,
 			"error", err.Error(),
@@ -305,5 +309,5 @@ func CheckAndUpdateCache(
 		metrics.ServiceStatus.WithLabelValues(service, activeStatus).Set(0)
 	}
 
-	return nil // Success
+	return nil
 }

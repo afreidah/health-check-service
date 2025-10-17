@@ -1,23 +1,16 @@
-// Package handlers provides tests for HTTP endpoint handlers.
+// -----------------------------------------------------------------------
+// HTTP Handlers - Tests
+// -----------------------------------------------------------------------
 //
-// This test suite validates the health check endpoint handler behavior under
-// various conditions. Since this endpoint is the primary interface for
-// monitoring systems, correct behavior is critical for production reliability.
+// Package handlers_test validates health check endpoint handler behavior
+// under various conditions. This endpoint is the primary interface for
+// monitoring systems, making correct behavior critical for production
+// reliability.
 //
-// Test Strategy:
-//   - Use httptest for isolated handler testing (no real HTTP server needed)
-//   - Test all possible HTTP status codes (200, 503, 500)
-//   - Verify thread-safety under concurrent load
-//   - Ensure handler works with any HTTP method
+// Run with race detector: go test -race ./internal/handlers
 //
-// Why These Tests Matter:
-//
-//	Incorrect status codes would cause monitoring systems to:
-//	  - Miss actual outages (false negatives)
-//	  - Trigger false alerts (false positives)
-//	  - Make incorrect routing/load balancing decisions
-//
-// Run with race detector: go test -race
+// -----------------------------------------------------------------------
+
 package handlers
 
 import (
@@ -30,13 +23,12 @@ import (
 	"github.com/afreidah/health-check-service/internal/cache"
 )
 
+// -----------------------------------------------------------------------
 // Basic Status Code Tests
-//
-// These tests verify that the handler returns correct HTTP status codes
-// for different service states.
+// -----------------------------------------------------------------------
 
 // TestHealthHandlerReturnsOK verifies handler returns 200 when service is
-// healthy (active). This is the success case that monitoring systems look for.
+// healthy (active).
 func TestHealthHandlerReturnsOK(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
@@ -52,8 +44,8 @@ func TestHealthHandlerReturnsOK(t *testing.T) {
 }
 
 // TestHealthHandlerReturnsServiceUnavailable verifies handler returns 503
-// when the service is down. This tells monitoring systems the service is
-// unhealthy and should be taken out of rotation.
+// when the service is down. This tells monitoring systems the service
+// should be taken out of rotation.
 func TestHealthHandlerReturnsServiceUnavailable(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusServiceUnavailable, "inactive")
@@ -69,7 +61,7 @@ func TestHealthHandlerReturnsServiceUnavailable(t *testing.T) {
 }
 
 // TestHealthHandlerReturnsInternalServerError verifies handler returns 500
-// when there's an error checking the service. This indicates a problem with
+// when there is an error checking the service. This indicates a problem with
 // the health checker itself, not the monitored service.
 func TestHealthHandlerReturnsInternalServerError(t *testing.T) {
 	c := cache.New()
@@ -85,14 +77,12 @@ func TestHealthHandlerReturnsInternalServerError(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
 // Table-Driven Tests
-//
-// These tests use table-driven testing to verify multiple scenarios in
-// a single test, improving coverage and maintainability.
+// -----------------------------------------------------------------------
 
-// TestHealthHandlerMultipleStatusCodes uses table-driven testing to verify
-// all possible status codes and service states in a single test. This ensures
-// comprehensive coverage of the status mapping.
+// TestHealthHandlerMultipleStatusCodes verifies all possible status codes
+// and service states using table-driven testing.
 func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -124,15 +114,13 @@ func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
 // HTTP Method Tests
-//
-// These tests verify the handler works with any HTTP method. While GET is
-// standard for health checks, some monitoring systems or load balancers
-// may use HEAD or OPTIONS.
+// -----------------------------------------------------------------------
 
 // TestHealthHandlerWithDifferentHTTPMethods verifies the handler works with
-// any HTTP method. While GET is standard for health checks, some monitoring
-// systems or load balancers may use HEAD or OPTIONS.
+// various HTTP methods. While GET is standard for health checks, some
+// monitoring systems or load balancers may use HEAD or OPTIONS.
 func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 	methods := []string{"GET", "POST", "HEAD", "OPTIONS"}
 
@@ -153,18 +141,15 @@ func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
 // Concurrency Tests
-//
-// These tests verify the handler is thread-safe under high concurrent load.
+// -----------------------------------------------------------------------
 
 // TestHealthHandlerConcurrentRequests verifies the handler is thread-safe
 // under high concurrent load. In production, many HTTP requests may hit the
 // health endpoint simultaneously.
 //
-// This test simulates 100 concurrent requests, which would expose race
-// conditions if the cache isn't properly protected by mutexes.
-//
-// Run with: go test -race to detect data races
+// Run with: go test -race ./internal/handlers
 func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
@@ -193,13 +178,13 @@ func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
 // Stale Data Tests
-//
-// These tests verify stale data detection and warning header behavior.
+// -----------------------------------------------------------------------
 
 // TestHealthHandlerStaleDataWarning verifies that the handler adds a Warning
-// header when the cached data is stale. The header now includes the age
-// of the data for operational visibility.
+// header when the cached data is stale. The header includes the age of the
+// data for operational visibility.
 func TestHealthHandlerStaleDataWarning(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")

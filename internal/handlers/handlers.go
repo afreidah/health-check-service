@@ -1,40 +1,18 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // HTTP Handlers
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //
-// This package implements the HTTP endpoint handlers for the health check
-// service. Handlers are designed to be lightweight and fast, reading from
-// the pre-populated cache rather than checking systemd directly on each
-// request.
-//
-// Architecture:
-//   - Handlers read from cache (no D-Bus calls per request)
-//   - Background checker updates cache periodically
-//   - This design prevents D-Bus overload under high HTTP traffic
+// Package handlers implements HTTP endpoint handlers for the health check
+// service. Handlers read from a pre-populated cache to avoid D-Bus calls per
+// request, preventing connection exhaustion under high load.
 //
 // Endpoints:
-//   GET /health - Returns service health status with appropriate HTTP codes
-//                 200 OK: Service is active and healthy
-//                 503 Service Unavailable: Service is down or transitioning
-//                 500 Internal Server Error: Error checking service
+//   GET /health - Returns service health with appropriate HTTP status codes
+//                 (200, 503, or 500)
+//   GET /api/status - Returns JSON status for dashboard and programmatic access
 //
-//   GET /api/status - Returns JSON status for dashboard
-//                     Always returns 200 OK with status info in JSON
-//
-// Observability:
-//   - All requests are logged with current status and timing
-//   - Request duration and count metrics published to Prometheus
-//   - Cache staleness is tracked and warnings issued
-//   - Metrics recorded via defer to ensure they're captured even on errors
-//
-// Security:
-//   - CORS headers only added for localhost (development)
-//   - HTTP method validation (GET/HEAD only)
-//   - Request timeout handled by HTTP server
-//
-// =============================================================================
+// -----------------------------------------------------------------------
 
-// Package handlers
 package handlers
 
 import (
@@ -50,43 +28,37 @@ import (
 	"github.com/afreidah/health-check-service/internal/metrics"
 )
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Constants
-// =============================================================================
+// -----------------------------------------------------------------------
 
 const (
-	// stalensThreshold defines when cache data is considered stale
-	// If last check was more than this duration ago, warn the client
+	// staleThreshold defines when cached data is considered stale
 	staleThreshold = 30 * time.Second
 
-	// allowedMethods defines which HTTP methods are allowed
-	// GET: Standard for health checks
-	// HEAD: Also standard (like GET but without body)
+	// allowedMethods lists HTTP methods accepted by health endpoints
 	allowedMethods = "GET, HEAD"
 )
 
-// component logger
 var logh = slog.Default().With("component", "http")
 
-// =============================================================================
-// Request Context Helpers
-// =============================================================================
+// -----------------------------------------------------------------------
+// Request Helpers
+// -----------------------------------------------------------------------
 
-// requestID generates or retrieves a request ID for tracing
+// requestID returns or generates a request ID for tracing. Checks
+// X-Request-ID header first, then generates a random ID if not present.
 func requestID(r *http.Request) string {
-	// Check if request already has an ID (from load balancer)
 	if id := r.Header.Get("X-Request-ID"); id != "" {
 		return id
 	}
-
-	// Generate random request ID if not present
 	var b [12]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 
-// clientIP extracts client IP from request
-// Respects X-Forwarded-For header (when behind proxy)
+// clientIP extracts the client IP from the request, respecting X-Forwarded-For
+// header when behind a proxy.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		return xff
@@ -94,28 +66,22 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// =============================================================================
-// Common Response Helpers
-// =============================================================================
+// -----------------------------------------------------------------------
+// Response Helpers
+// -----------------------------------------------------------------------
 
-// CHANGED: Add helper to set common security headers
+// setSecurityHeaders sets common security headers on the response.
 func setSecurityHeaders(w http.ResponseWriter) {
-	// Prevent browser from caching
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
-
-	// Prevent MIME type sniffing
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	// Prevent clickjacking
 	w.Header().Set("X-Frame-Options", "DENY")
-
-	// Enable XSS protection
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 }
 
-// CHANGED: Helper to validate HTTP method
+// validateMethod checks if the request method is allowed and returns false
+// if not, with appropriate error response already written.
 func validateMethod(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", allowedMethods)
@@ -125,41 +91,21 @@ func validateMethod(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Health Check Handler
-// =============================================================================
+// -----------------------------------------------------------------------
 
-// HealthHandler serves the /health endpoint by reading the cached service
-// status and returning the appropriate HTTP status code.
+// HealthHandler serves the /health endpoint by returning the cached service
+// status. Returns 200 if active, 503 if unavailable, 500 if error checking.
 //
-// Design Decision: Read from Cache
-//
-//	This handler reads from the in-memory cache instead of querying systemd
-//	directly. This prevents D-Bus connection exhaustion under high load and
-//	ensures consistent response times regardless of systemd responsiveness.
-//
-// Response Codes:
-//   - 200 OK: Service is active
-//   - 503 Service Unavailable: Service is inactive/failed/transitioning
-//   - 500 Internal Server Error: Error communicating with systemd
-//
-// Headers:
-//   - Warning: 199 - Stale health check data (if cache is old)
-//   - Allow: GET, HEAD (indicates allowed methods)
-//
-// Metrics:
-//
-//	Records request duration and increments total request counter, labeled
-//	by status code for monitoring and alerting.
+// The handler reads from cache rather than querying systemd directly to
+// prevent D-Bus connection exhaustion under high request volume. Metrics are
+// recorded regardless of outcome via defer.
 func HealthHandler(w http.ResponseWriter, r *http.Request, serviceCache *cache.ServiceCache) {
 	reqID := requestID(r)
 	start := time.Now()
 	var statusCode int
 
-	// -------------------------------------------------------------------------
-	// Deferred Metrics Recording
-	// -------------------------------------------------------------------------
-	// Use defer to ensure metrics are recorded even if handler panics or returns early
 	defer func() {
 		duration := time.Since(start).Seconds()
 		metrics.RequestDuration.Observe(duration)
@@ -167,7 +113,6 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, serviceCache *cache.S
 			WithLabelValues(fmt.Sprintf("%d", statusCode)).
 			Inc()
 
-		// Log request completion
 		logh.Debug("health request completed",
 			"request_id", reqID,
 			"method", r.Method,
@@ -176,25 +121,15 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, serviceCache *cache.S
 		)
 	}()
 
-	// -------------------------------------------------------------------------
-	// CHANGED: Validate HTTP method first
-	// -------------------------------------------------------------------------
 	if !validateMethod(w, r) {
 		statusCode = http.StatusMethodNotAllowed
 		return
 	}
 
-	// -------------------------------------------------------------------------
-	// Set Security Headers
-	// -------------------------------------------------------------------------
 	setSecurityHeaders(w)
 
-	// -------------------------------------------------------------------------
-	// Read Status from Cache
-	// -------------------------------------------------------------------------
 	statusCode, state := serviceCache.GetStatus()
 
-	// Log with full context
 	logh.Info("health request",
 		"request_id", reqID,
 		"client_ip", clientIP(r),
@@ -203,14 +138,9 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, serviceCache *cache.S
 		"method", r.Method,
 	)
 
-	// -------------------------------------------------------------------------
-	// CHANGED: Check for stale data and add warning header
-	// -------------------------------------------------------------------------
+	// Add warning header if cached data is stale
 	if serviceCache.IsStale(staleThreshold) {
 		staleness := time.Since(serviceCache.GetLastChecked())
-
-		// Add warning header per RFC 7234
-		// 199 is an "Miscellaneous Persistent Warning"
 		w.Header().Set("Warning", fmt.Sprintf("199 - Stale health check data (age: %ds)",
 			int(staleness.Seconds())))
 
@@ -219,61 +149,41 @@ func HealthHandler(w http.ResponseWriter, r *http.Request, serviceCache *cache.S
 			"staleness_seconds", int(staleness.Seconds()),
 			"state", state)
 
-		// CHANGED: Update staleness metric so watchdog can detect it
 		metrics.CacheStaleness.WithLabelValues("").Set(staleness.Seconds())
 	}
 
-	// -------------------------------------------------------------------------
-	// Send HTTP Response
-	// -------------------------------------------------------------------------
-	// For HEAD requests, don't send body (client only wants headers)
 	w.WriteHeader(statusCode)
 }
 
-// =============================================================================
-// Status API Response Types
-// =============================================================================
+// -----------------------------------------------------------------------
+// Status API Response
+// -----------------------------------------------------------------------
 
-// StatusResponse represents the JSON response for the dashboard API.
-// This provides all the information the React dashboard needs to display
-// the current service health status.
+// StatusResponse represents the JSON response for the status API endpoint.
+// This structure provides all information needed by the dashboard frontend
+// and programmatic clients.
 type StatusResponse struct {
-	Service     string    `json:"service"`      // Name of the monitored service
-	Status      string    `json:"status"`       // Human-readable status (healthy/unhealthy/error)
-	State       string    `json:"state"`        // Systemd state (active/inactive/failed)
-	StatusCode  int       `json:"status_code"`  // HTTP status code (200/503/500)
-	LastChecked time.Time `json:"last_checked"` // When the status was last updated
-	Uptime      float64   `json:"uptime"`       // Uptime percentage (placeholder for now)
-	Healthy     bool      `json:"healthy"`      // Simple boolean for UI
-	Stale       bool      `json:"stale"`        // CHANGED: Is the data stale?
-	StalenessS  int       `json:"staleness_s"`  // CHANGED: How old is it in seconds?
+	Service     string    `json:"service"`
+	Status      string    `json:"status"`
+	State       string    `json:"state"`
+	StatusCode  int       `json:"status_code"`
+	LastChecked time.Time `json:"last_checked"`
+	Uptime      float64   `json:"uptime"`
+	Healthy     bool      `json:"healthy"`
+	Stale       bool      `json:"stale"`
+	StalenessS  int       `json:"staleness_s"`
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Status API Handler
-// =============================================================================
+// -----------------------------------------------------------------------
 
-// StatusAPIHandler serves the /api/status endpoint for the dashboard.
-// Returns JSON with current service health status.
+// StatusAPIHandler serves the /api/status endpoint, returning detailed health
+// information as JSON. Always returns 200 OK (even if service is down) with
+// status information in the response body.
 //
-// This is different from /health which returns only HTTP status codes.
-// This endpoint provides detailed information for the dashboard UI.
-//
-// Response format:
-//
-//	{
-//	  "service": "nginx",
-//	  "status": "healthy",
-//	  "state": "active",
-//	  "status_code": 200,
-//	  "last_checked": "2025-10-15T12:34:56Z",
-//	  "uptime": 99.9,
-//	  "healthy": true,
-//	  "stale": false,
-//	  "staleness_s": 5
-//	}
-//
-// Always returns 200 OK (even if service is down, we return the status info)
+// Unlike /health which uses status codes, this endpoint provides structured
+// data for dashboards and programmatic clients.
 func StatusAPIHandler(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -283,13 +193,9 @@ func StatusAPIHandler(
 	reqID := requestID(r)
 	start := time.Now()
 
-	// -------------------------------------------------------------------------
-	// Deferred Metrics Recording
-	// -------------------------------------------------------------------------
 	defer func() {
 		duration := time.Since(start).Seconds()
 		metrics.RequestDuration.Observe(duration)
-		// API requests are always successful (200), so just count them
 		metrics.RequestsTotal.WithLabelValues("200").Inc()
 
 		logh.Debug("api status request completed",
@@ -298,31 +204,19 @@ func StatusAPIHandler(
 		)
 	}()
 
-	// -------------------------------------------------------------------------
-	// CHANGED: Validate HTTP method
-	// -------------------------------------------------------------------------
 	if !validateMethod(w, r) {
-		// ValidationMethod already set status 405, but we need to record it
 		metrics.RequestsTotal.WithLabelValues("405").Inc()
 		return
 	}
 
-	// -------------------------------------------------------------------------
-	// Set Security Headers
-	// -------------------------------------------------------------------------
 	setSecurityHeaders(w)
 
-	// -------------------------------------------------------------------------
-	// Get current status from cache
-	// -------------------------------------------------------------------------
 	statusCode, state := serviceCache.GetStatus()
 	lastChecked := serviceCache.GetLastChecked()
 	staleness := time.Since(lastChecked)
 	isStale := serviceCache.IsStale(staleThreshold)
 
-	// -------------------------------------------------------------------------
 	// Build response
-	// -------------------------------------------------------------------------
 	response := StatusResponse{
 		Service:     serviceName,
 		State:       state,
@@ -345,34 +239,25 @@ func StatusAPIHandler(
 		response.Status = "unknown"
 	}
 
-	// Placeholder for actual uptime calculation
 	response.Uptime = 99.9
 
-	// -------------------------------------------------------------------------
-	// CHANGED: Set response headers (more conservative CORS)
-	// -------------------------------------------------------------------------
+	// Set response headers
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	// CHANGED: Only add CORS header for localhost (development)
-	// In production, use a proper reverse proxy (nginx, Traefik, etc.)
-	// to handle CORS instead of exposing it from the app
+	// Add CORS header for localhost development only
+	// Production deployments should use reverse proxy for CORS handling
 	origin := r.Header.Get("Origin")
 	if origin == "http://localhost:3000" || origin == "http://localhost:8080" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
 	}
 
-	// -------------------------------------------------------------------------
 	// Encode and send response
-	// -------------------------------------------------------------------------
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logh.Error("error encoding status response",
 			"request_id", reqID,
 			"client_ip", clientIP(r),
 			"error", err.Error())
-
-		// Response already started, can't send error
-		// Just log it
 		return
 	}
 

@@ -1,24 +1,15 @@
-// =============================================================================
+// -----------------------------------------------------------------------
 // Service Status Cache - Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 //
-// This test suite verifies the thread-safe behavior and state machine logic
-// of the ServiceCache. Since the cache is accessed concurrently by multiple
-// goroutines in production, these tests focus heavily on race conditions and
+// Package cache_test validates thread-safe behavior and state machine logic
+// of the ServiceCache. The cache is accessed concurrently by multiple
+// goroutines in production, so tests focus heavily on race conditions and
 // concurrent access patterns.
-//
-// Test Coverage:
-//   - Constructor initialization and default values
-//   - Cache lifecycle state transitions
-//   - Basic read/write operations
-//   - Timestamp tracking on updates
-//   - Staleness detection
-//   - Concurrent access (race detection)
-//   - New state query methods
 //
 // Run with race detector: go test -race ./internal/cache
 //
-// =============================================================================
+// -----------------------------------------------------------------------
 
 package cache
 
@@ -29,9 +20,9 @@ import (
 	"time"
 )
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Constructor Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestNew verifies the constructor initializes cache in uninitialized state.
 // The cache should start in an "uninitialized" state until the first real
@@ -70,9 +61,9 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // State Transition Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestStateTransitionUninitialized tests that cache starts uninitialized.
 func TestStateTransitionUninitialized(t *testing.T) {
@@ -87,7 +78,9 @@ func TestStateTransitionUninitialized(t *testing.T) {
 	}
 }
 
-// TestStateTransitionFirstUpdate tests transition from uninitialized to running.
+// TestStateTransitionFirstUpdate tests transition from uninitialized to
+// running state. The first status update transitions the cache from
+// uninitialized to running.
 func TestStateTransitionFirstUpdate(t *testing.T) {
 	c := New()
 
@@ -119,7 +112,8 @@ func TestStateTransitionFirstUpdate(t *testing.T) {
 	}
 }
 
-// TestStateTransitionToError tests transition to error state.
+// TestStateTransitionToError tests transition to error state. The cache
+// transitions to error state when encountering persistent errors.
 func TestStateTransitionToError(t *testing.T) {
 	c := New()
 
@@ -151,9 +145,9 @@ func TestStateTransitionToError(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Basic Operations Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestUpdateAndGetStatus verifies the basic update/read cycle.
 func TestUpdateAndGetStatus(t *testing.T) {
@@ -206,9 +200,9 @@ func TestMultipleUpdates(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Timestamp Validation Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestUpdateStatusSetsLastChecked verifies lastChecked is updated on change.
 func TestUpdateStatusSetsLastChecked(t *testing.T) {
@@ -226,11 +220,13 @@ func TestUpdateStatusSetsLastChecked(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Staleness Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
-// TestIsStale verifies staleness detection works correctly.
+// TestIsStale verifies staleness detection works correctly. Broken staleness
+// detection would cause the monitoring system to serve arbitrarily old data
+// without warning operators.
 func TestIsStale(t *testing.T) {
 	c := New()
 
@@ -281,19 +277,20 @@ func TestGetStaleness(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // Concurrency Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestConcurrentAccess verifies thread safety under high concurrent load.
-// Simulates production with many HTTP handlers reading and one checker writing.
+// Simulates production with many HTTP handlers reading and background
+// checker writing.
 //
-// Run with: go test -race to detect data races
+// Run with: go test -race ./internal/cache
 func TestConcurrentAccess(t *testing.T) {
 	c := New()
 
-	numReaders := 50 // HTTP request handlers
-	numWriters := 10 // Background checker (simulated)
+	numReaders := 50
+	numWriters := 10
 
 	var wg sync.WaitGroup
 
@@ -365,9 +362,9 @@ func TestIsStaleConcurrentAccess(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // New Query Method Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestIsUninitialized verifies uninitialized detection.
 func TestIsUninitialized(t *testing.T) {
@@ -424,9 +421,9 @@ func TestGetCacheState(t *testing.T) {
 	}
 }
 
-// =============================================================================
+// -----------------------------------------------------------------------
 // String Representation Tests
-// =============================================================================
+// -----------------------------------------------------------------------
 
 // TestString verifies String() provides useful debug output.
 func TestString(t *testing.T) {

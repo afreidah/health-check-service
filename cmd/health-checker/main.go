@@ -60,8 +60,11 @@ func main() {
 	serviceCache := cache.New()
 	srv := app.SetupHTTPServer(cfg, serviceCache, dashboardHTML)
 
-	cancelChecker := app.StartBackgroundChecker(conn, cfg, serviceCache)
+	// cancel function here
+	cancelChecker, _ := app.StartBackgroundChecker(conn, cfg, serviceCache)
+
 	app.StartHTTPServer(srv, cfg)
 
+	// WaitForShutdown now handles all the shutdown orchestration
 	app.WaitForShutdown(srv, cancelChecker)
 }

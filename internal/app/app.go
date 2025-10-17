@@ -8,8 +8,9 @@
 //
 // The service follows a clean separation of concerns: HTTP routing is delegated to
 // handlers, systemd queries to the checker package, and data persistence to the cache.
-// The app module acts as the composition root, wiring these components together and
-// managing their lifecycle.
+// Prometheus metrics are centrally defined in the metrics package. The app module
+// acts as the composition root, wiring these components together and managing their
+// lifecycle.
 package app
 
 import (
@@ -29,8 +30,8 @@ import (
 	"github.com/afreidah/health-check-service/internal/config"
 	"github.com/afreidah/health-check-service/internal/handlers"
 	"github.com/afreidah/health-check-service/internal/logging"
+	"github.com/afreidah/health-check-service/internal/metrics"
 	"github.com/coreos/go-systemd/v22/dbus"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -43,39 +44,6 @@ var (
 )
 
 var loga = slog.Default().With("component", "app")
-
-// Checker Health Metrics
-//
-// These metrics track the health and responsiveness of the background checker
-// goroutine. They provide visibility into whether the service is actively
-// monitoring the target systemd unit or if the checker has become unresponsive.
-
-var (
-	// checkerHealthy indicates whether the background checker goroutine
-	// is responsive and updating health information. Set to 1 when healthy,
-	// 0 when the checker has failed to update within the expected interval.
-	checkerHealthy = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "health_checker_healthy",
-			Help: "Whether the background checker goroutine is responding (1=yes, 0=no)",
-		},
-	)
-
-	// checkerLastCheckTimestamp records the Unix timestamp of the most recent
-	// successful health check. This metric enables detection of stale data
-	// and provides evidence that the checker is actively running.
-	checkerLastCheckTimestamp = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "health_checker_last_check_timestamp_seconds",
-			Help: "Unix timestamp of the last successful health check",
-		},
-	)
-)
-
-func init() {
-	prometheus.MustRegister(checkerHealthy)
-	prometheus.MustRegister(checkerLastCheckTimestamp)
-}
 
 // Configuration & D-Bus Setup
 //
@@ -271,6 +239,10 @@ func StartBackgroundChecker(
 // sets the checker health metric to 0, and continues monitoring for recovery.
 // The watchdog checks every 10 seconds and considers the checker unhealthy if
 // its last update exceeds 2x the configured check interval.
+//
+// Metrics Updated:
+//   - health_checker_healthy: Set to 1 when checker is responsive, 0 when stuck
+//   - health_checker_last_check_timestamp_seconds: Updated with current cache timestamp
 func startCheckerWatchdog(
 	ctx context.Context,
 	cfg *config.Config,
@@ -292,11 +264,11 @@ func startCheckerWatchdog(
 			wasHealthy := isHealthy
 			isHealthy = checkerHealth.IsHealthy(maxCheckerAge)
 
-			// Update Prometheus metrics
+			// Update Prometheus metrics to reflect checker health
 			if isHealthy {
-				checkerHealthy.Set(1)
+				metrics.CheckerHealthy.Set(1)
 			} else {
-				checkerHealthy.Set(0)
+				metrics.CheckerHealthy.Set(0)
 			}
 
 			// Log state transitions for operational visibility
@@ -311,11 +283,11 @@ func startCheckerWatchdog(
 			}
 
 			// Update gauge with timestamp of the most recent health check
-			checkerLastCheckTimestamp.Set(float64(serviceCache.GetLastChecked().Unix()))
+			metrics.CheckerLastCheckTimestamp.Set(float64(serviceCache.GetLastChecked().Unix()))
 
 		case <-ctx.Done():
 			loga.Info("stopping checker watchdog")
-			checkerHealthy.Set(0)
+			metrics.CheckerHealthy.Set(0)
 			return
 		}
 	}

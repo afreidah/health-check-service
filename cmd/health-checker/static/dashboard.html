@@ -16,7 +16,6 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <style>
-        /* CHANGED: Add custom animations and styles */
         @keyframes pulse-warning {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.7; }
@@ -37,23 +36,84 @@
         .status-healthy { background-color: #10b981; }
         .status-warning { background-color: #f59e0b; }
         .status-critical { background-color: #ef4444; }
+
+        .history-bar {
+            min-height: 2px;
+            transition: all 0.2s ease;
+        }
+
+        .history-bar:hover {
+            opacity: 1 !important;
+        }
+
+        .history-container {
+            display: flex;
+            align-items: flex-end;
+            gap: 3px;
+            height: 150px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 8px;
+        }
+
+        .history-bar-wrapper {
+            flex-shrink: 0;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            height: 100%;
+            min-width: 8px;
+        }
+
+        .history-bar-inner {
+            flex-grow: 1;
+            width: 100%;
+            border-radius: 2px 2px 0 0;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            opacity: 0.8;
+        }
+
+        .history-tooltip {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            margin-bottom: 8px;
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 10;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        }
+
+        .history-bar-wrapper:hover .history-bar-inner {
+            opacity: 1;
+        }
+
+        .history-bar-wrapper:hover .history-tooltip {
+            opacity: 1;
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <div id="root"></div>
 
-    <!-- CHANGED: Complete rewrite with new fields and better UX -->
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // CHANGED: Helper to get status color based on health AND staleness
         function getStatusColor(healthy, stale) {
-            if (stale) return 'bg-yellow-900 border-yellow-500';  // Stale = warning
-            if (healthy) return 'bg-green-900 border-green-500';  // Healthy = good
-            return 'bg-red-900 border-red-500';                   // Down = bad
+            if (stale) return 'bg-yellow-900 border-yellow-500';
+            if (healthy) return 'bg-green-900 border-green-500';
+            return 'bg-red-900 border-red-500';
         }
 
-        // CHANGED: Helper to get status text
         function getStatusText(status, stale) {
             if (stale) return 'STALE DATA';
             if (status === 'healthy') return 'HEALTHY';
@@ -62,26 +122,16 @@
             return status.toUpperCase();
         }
 
-        // CHANGED: Helper to get status indicator color
         function getIndicatorColor(healthy, stale) {
             if (stale) return 'status-warning';
             if (healthy) return 'status-healthy';
             return 'status-critical';
         }
 
-        // CHANGED: Format staleness nicely
         function formatStaleness(seconds) {
             if (seconds < 60) return `${seconds}s ago`;
             const minutes = Math.floor(seconds / 60);
             return `${minutes}m ${seconds % 60}s ago`;
-        }
-
-        // CHANGED: Calculate uptime from checker health
-        function calculateUptime(status, stale) {
-            // This is a placeholder - in production, track actual uptime
-            if (stale) return 'Unknown (stale)';
-            if (status.healthy) return '99.9%';
-            return '0%';
         }
 
         function Dashboard() {
@@ -91,9 +141,34 @@
             const [history, setHistory] = useState([]);
             const [healthResponse, setHealthResponse] = useState(null);
             const [metricsResponse, setMetricsResponse] = useState(null);
+            const [metricsRawData, setMetricsRawData] = useState('');
+            const [metricsFilters, setMetricsFilters] = useState({
+                healthChecker: true,
+                healthCheck: true,
+                monitoredService: true,
+                comments: true,
+            });
             const [autoRefresh, setAutoRefresh] = useState(true);
 
-            // CHANGED: Fetch status and handle new fields
+            // Derived state: are all filters enabled?
+            const allFiltersEnabled = Object.values(metricsFilters).every(v => v === true);
+            const anyFilterEnabled = Object.values(metricsFilters).some(v => v === true);
+
+            // Handle "All" checkbox
+            const handleToggleAll = (checked) => {
+                setMetricsFilters({
+                    healthChecker: checked,
+                    healthCheck: checked,
+                    monitoredService: checked,
+                    comments: checked,
+                });
+            };
+
+            // Handle individual filter changes
+            const handleFilterChange = (key, checked) => {
+                setMetricsFilters({...metricsFilters, [key]: checked});
+            };
+
             useEffect(() => {
                 const fetchStatus = async () => {
                     try {
@@ -108,14 +183,17 @@
                         setLoading(false);
                         setError(null);
 
-                        // CHANGED: Track both health and staleness in history
-                        setHistory(prev => [...prev, {
-                            time: new Date(),
-                            healthy: data.healthy,
-                            stale: data.stale,
-                            staleness_s: data.staleness_s,
-                            status: data.status
-                        }].slice(-30)); // Keep last 30 checks
+                        setHistory(prev => {
+                            const newEntry = {
+                                time: new Date(),
+                                healthy: data.healthy,
+                                stale: data.stale,
+                                staleness_s: data.staleness_s,
+                                status: data.status,
+                                statusCode: data.status_code,
+                            };
+                            return [...prev, newEntry].slice(-60);
+                        });
 
                     } catch (err) {
                         setError(err.message);
@@ -125,7 +203,6 @@
 
                 fetchStatus();
 
-                // CHANGED: Make refresh interval configurable
                 if (!autoRefresh) return;
 
                 const interval = setInterval(fetchStatus, 2000);
@@ -158,29 +235,62 @@
             const showMetricsResponse = async () => {
                 try {
                     const response = await fetch('/metrics');
-                    const data = await response.text();
-                    // CHANGED: Only show relevant metrics
-                    const lines = data.split('\n');
-                    const relevant = lines.filter(line => 
-                        line.includes('health_checker') || 
-                        line.includes('monitored_service') ||
-                        line.includes('health_check_cache_staleness')
-                    ).join('\n');
+                    const rawData = await response.text();
                     
+                    setMetricsRawData(rawData);
                     setMetricsResponse({
                         status: response.status,
                         statusText: response.statusText,
-                        body: relevant || data
                     });
                     setHealthResponse(null);
                 } catch (err) {
                     setMetricsResponse({
                         status: 'Error',
                         statusText: 'Failed to fetch',
-                        body: err.message
                     });
+                    setMetricsRawData(err.message);
                 }
             };
+
+            // Filter metrics whenever filters change
+            useEffect(() => {
+                if (!metricsResponse || !metricsRawData) return;
+
+                // Check if ANY filter is enabled
+                const hasAnyFilter = Object.values(metricsFilters).some(v => v === true);
+
+                // If no filters selected, show blank
+                if (!hasAnyFilter) {
+                    setMetricsResponse(prev => ({
+                        ...prev,
+                        body: ''
+                    }));
+                    return;
+                }
+
+                // Otherwise filter the data
+                const lines = metricsRawData.split('\n');
+                const relevant = lines.filter(line => {
+                    if (metricsFilters.comments && line.startsWith('# ')) return true;
+                    if (metricsFilters.healthChecker && line.includes('health_checker')) return true;
+                    if (metricsFilters.healthCheck && line.includes('health_check_')) return true;
+                    if (metricsFilters.monitoredService && line.includes('monitored_service')) return true;
+                    return false;
+                }).join('\n');
+
+                setMetricsResponse(prev => ({
+                    ...prev,
+                    body: relevant
+                }));
+            }, [metricsFilters, metricsRawData]);
+
+            // Auto-refresh metrics while modal is open
+            useEffect(() => {
+                if (!metricsResponse) return;
+
+                const interval = setInterval(showMetricsResponse, 2000);
+                return () => clearInterval(interval);
+            }, [metricsResponse]);
 
             if (loading) {
                 return (
@@ -210,10 +320,15 @@
                 );
             }
 
-            // CHANGED: Determine visual state based on both health and staleness
             const statusColor = getStatusColor(status.healthy, status.stale);
             const statusText = getStatusText(status.status, status.stale);
             const indicatorColor = getIndicatorColor(status.healthy, status.stale);
+
+            const getBarHeight = (item) => {
+                if (item.stale) return 40;
+                if (item.healthy) return 100;
+                return 20;
+            };
 
             return (
                 <div className="container mx-auto px-4 py-8">
@@ -237,7 +352,7 @@
                         </div>
                     </div>
 
-                    {/* CHANGED: Main Status Card with better warnings */}
+                    {/* Main Status Card */}
                     <div className={`rounded-lg p-8 mb-6 border-2 ${statusColor}`}>
                         <div className="flex items-start justify-between mb-6">
                             <div>
@@ -271,7 +386,6 @@
                             </div>
                         </div>
 
-                        {/* CHANGED: Show staleness warning prominently */}
                         {status.stale && (
                             <div className={`mt-4 p-4 bg-yellow-800 border border-yellow-600 rounded ${
                                 status.staleness_s > 60 ? 'pulse-warning' : ''
@@ -290,9 +404,8 @@
                         )}
                     </div>
 
-                    {/* CHANGED: Better stats grid */}
+                    {/* Stats Grid */}
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                        {/* Last Checked */}
                         <div className="bg-gray-800 rounded-lg p-6">
                             <p className="text-gray-400 text-sm mb-2">Last Checked</p>
                             <p className="text-2xl font-bold">
@@ -303,7 +416,6 @@
                             </p>
                         </div>
 
-                        {/* Staleness */}
                         <div className="bg-gray-800 rounded-lg p-6">
                             <p className="text-gray-400 text-sm mb-2">Data Age</p>
                             <p className={`text-2xl font-bold ${
@@ -318,7 +430,6 @@
                             </p>
                         </div>
 
-                        {/* Status */}
                         <div className="bg-gray-800 rounded-lg p-6">
                             <p className="text-gray-400 text-sm mb-2">Service Status</p>
                             <div className="flex items-center">
@@ -329,7 +440,6 @@
                             </div>
                         </div>
 
-                        {/* Uptime */}
                         <div className="bg-gray-800 rounded-lg p-6">
                             <p className="text-gray-400 text-sm mb-2">Status</p>
                             <p className={`text-2xl font-bold ${
@@ -343,53 +453,70 @@
                         </div>
                     </div>
 
-                    {/* CHANGED: Status History Chart with staleness tracking */}
+                    {/* Status History Chart */}
                     <div className="bg-gray-800 rounded-lg p-6 mb-6">
-                        <h3 className="text-xl font-bold mb-4">Check History (Last 30)</h3>
-                        <div className="flex items-end gap-1 h-32 overflow-x-auto">
-                            {history.map((item, index) => (
-                                <div
-                                    key={index}
-                                    className="flex-shrink-0 relative group"
-                                    title={`${item.time.toLocaleTimeString()}: ${item.status} (${item.staleness_s}s old)`}
-                                >
-                                    {/* Bar color: green=healthy, yellow=unhealthy, red=stale */}
-                                    <div
-                                        className={`w-4 rounded-t transition-all hover:opacity-75 ${
-                                            item.stale ? 'bg-yellow-500' :
-                                            item.healthy ? 'bg-green-500' : 'bg-red-500'
-                                        }`}
-                                        style={{ height: item.healthy ? '100%' : item.stale ? '60%' : '20%' }}
-                                    />
-                                    
-                                    {/* Tooltip */}
-                                    <div className="hidden group-hover:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs whitespace-nowrap z-10">
-                                        {item.time.toLocaleTimeString()}: {item.status}
-                                    </div>
-                                </div>
-                            ))}
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold">Check History (Last {Math.min(history.length, 60)} checks)</h3>
+                            <span className="text-xs text-gray-400">
+                                {history.length === 0 ? 'Waiting for data...' : `${(history.length * 2)}s coverage`}
+                            </span>
                         </div>
-                        <div className="flex justify-between mt-2 text-xs text-gray-400">
-                            <span>Oldest</span>
-                            <span>Most Recent</span>
-                        </div>
-                    </div>
 
-                    {/* CHANGED: Better legend */}
-                    <div className="bg-gray-800 rounded-lg p-4 mb-6">
-                        <p className="text-sm font-bold mb-2">Chart Legend</p>
-                        <div className="flex gap-6 text-sm flex-wrap">
-                            <div className="flex items-center gap-2">
-                                <div className="w-3 h-12 bg-green-500 rounded-b"></div>
-                                <span>Healthy (100%)</span>
+                        {history.length === 0 ? (
+                            <div className="flex items-center justify-center h-40 bg-gray-900 rounded border border-gray-700">
+                                <p className="text-gray-400">
+                                    📊 Collecting data... (checks every 2 seconds)
+                                </p>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <div className="w-3 h-7 bg-red-500 rounded-b"></div>
-                                <span>Unhealthy (20%)</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <div className="w-3 h-9 bg-yellow-500 rounded-b"></div>
-                                <span>Stale Data (60%)</span>
+                        ) : (
+                            <>
+                                <div className="history-container">
+                                    {history.map((item, index) => (
+                                        <div
+                                            key={index}
+                                            className="history-bar-wrapper group"
+                                            title={`${item.time.toLocaleTimeString()}: ${item.status} (${item.staleness_s}s old)`}
+                                        >
+                                            <div
+                                                className={`history-bar-inner ${
+                                                    item.stale ? 'bg-yellow-500' :
+                                                    item.healthy ? 'bg-green-500' : 'bg-red-500'
+                                                }`}
+                                                style={{ 
+                                                    height: `${getBarHeight(item)}%`,
+                                                    minHeight: '2px'
+                                                }}
+                                            />
+                                            <div className="history-tooltip">
+                                                {item.time.toLocaleTimeString()}<br />
+                                                {item.status} ({item.statusCode})
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="flex justify-between mt-4 text-xs text-gray-400">
+                                    <span>{history.length > 0 ? new Date(history[0].time).toLocaleTimeString() : 'N/A'}</span>
+                                    <span>{history.length > 0 ? new Date(history[history.length - 1].time).toLocaleTimeString() : 'N/A'}</span>
+                                </div>
+                            </>
+                        )}
+
+                        <div className="bg-gray-900 rounded p-4 mt-4">
+                            <p className="text-sm font-bold mb-2">Legend</p>
+                            <div className="flex gap-6 text-sm flex-wrap">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-12 bg-green-500 rounded-sm"></div>
+                                    <span>Healthy (100%)</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-4 bg-red-500 rounded-sm"></div>
+                                    <span>Unhealthy (20%)</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-7 bg-yellow-500 rounded-sm"></div>
+                                    <span>Stale (40%)</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -455,7 +582,7 @@
                     {metricsResponse && (
                         <div className="mt-6 bg-gray-800 rounded-lg p-6">
                             <div className="flex items-center justify-between mb-4">
-                                <h3 className="text-xl font-bold">Relevant Metrics</h3>
+                                <h3 className="text-xl font-bold">Prometheus Metrics</h3>
                                 <button
                                     onClick={() => setMetricsResponse(null)}
                                     className="text-gray-400 hover:text-white text-2xl"
@@ -472,8 +599,67 @@
                                     HTTP {metricsResponse.status}
                                 </span>
                             </div>
+
+                            {/* Metric Type Filters */}
+                            <div className="mb-4 p-4 bg-gray-900 rounded border border-gray-700">
+                                <p className="text-sm font-semibold mb-3 text-gray-300">Metric Types:</p>
+                                
+                                {/* All Checkbox */}
+                                <div className="mb-3 pb-3 border-b border-gray-700">
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={allFiltersEnabled}
+                                            onChange={(e) => handleToggleAll(e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm font-semibold">All Metrics</span>
+                                    </label>
+                                </div>
+
+                                {/* Individual Checkboxes */}
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.healthChecker}
+                                            onChange={(e) => handleFilterChange('healthChecker', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Checker Health</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.healthCheck}
+                                            onChange={(e) => handleFilterChange('healthCheck', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Health Checks</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.monitoredService}
+                                            onChange={(e) => handleFilterChange('monitoredService', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Service Status</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.comments}
+                                            onChange={(e) => handleFilterChange('comments', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Help Text</span>
+                                    </label>
+                                </div>
+                            </div>
+
                             <p className="text-xs text-gray-400 mb-2">
-                                Showing health_checker_*, monitored_service_*, and cache_staleness_* metrics
+                                {Object.values(metricsFilters).filter(Boolean).length} of 4 categories selected
                             </p>
                             <pre className="bg-gray-900 p-4 rounded overflow-x-auto text-sm text-gray-300 max-h-96">
 {metricsResponse.body}

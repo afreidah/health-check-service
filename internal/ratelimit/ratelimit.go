@@ -135,6 +135,11 @@ func (m *Manager) GetTokens(ip string) float64 {
 	return limiter.Tokens()
 }
 
+// GetRate returns the configured requests per second rate.
+func (m *Manager) GetRate() float64 {
+	return m.requestsPerSec
+}
+
 // -----------------------------------------------------------------------
 // Cleanup
 // -----------------------------------------------------------------------
@@ -193,7 +198,7 @@ func (m *Manager) Stats() map[string]interface{} {
 // Returns 429 Too Many Requests if limit exceeded.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := getRealIP(r)
+		ip := GetIP(r)
 
 		if !m.Allow(ip) {
 			// Include rate limit info in response headers
@@ -224,7 +229,7 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 // Useful when different endpoints need different limits.
 func (m *Manager) EndpointMiddleware(endpoint string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := getRealIP(r)
+		ip := GetIP(r)
 
 		if !m.Allow(ip) {
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%.0f", m.requestsPerSec))
@@ -254,10 +259,10 @@ func (m *Manager) EndpointMiddleware(endpoint string, next http.Handler) http.Ha
 // IP Extraction
 // -----------------------------------------------------------------------
 
-// getRealIP extracts the real client IP from the request.
+// GetIP extracts the real client IP from the request.
 // Checks X-Forwarded-For header (when behind proxy) first, then X-Real-IP,
 // then falls back to RemoteAddr.
-func getRealIP(r *http.Request) string {
+func GetIP(r *http.Request) string {
 	// X-Forwarded-For can contain multiple IPs (client, proxy1, proxy2, ...)
 	// We want the first one (client)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {

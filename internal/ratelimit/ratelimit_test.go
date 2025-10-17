@@ -1,6 +1,15 @@
 // -----------------------------------------------------------------------
 // Rate Limiting Tests - internal/ratelimit/ratelimit_test.go
 // -----------------------------------------------------------------------
+//
+// Package ratelimit_test validates token bucket rate limiting behavior
+// including per-IP isolation, token refill rates, and HTTP middleware
+// integration. These tests ensure rate limits protect endpoints from
+// excessive load while allowing legitimate traffic through.
+//
+// Run with race detector: go test -race ./internal/ratelimit
+//
+// -----------------------------------------------------------------------
 
 package ratelimit
 
@@ -16,33 +25,45 @@ import (
 // Basic Allow Tests
 // -----------------------------------------------------------------------
 
+// TestAllow_WithinLimit verifies that requests within burst capacity are
+// allowed. Token bucket algorithm provides initial burst capacity equal to
+// the configured burst size. With 10 req/sec rate and 20 burst, exactly
+// 20 requests can be made immediately before exhaustion.
 func TestAllow_WithinLimit(t *testing.T) {
 	m := New(10, 20) // 10 req/sec, burst 20
 	ip := "192.168.1.1"
 
-	// Should allow 10 requests immediately (rate) + 20 more (burst)
-	for i := 0; i < 30; i++ {
+	// Should allow 20 requests immediately (burst capacity)
+	// The bucket starts full with 20 tokens available
+	for i := 0; i < 20; i++ {
 		if !m.Allow(ip) {
 			t.Fatalf("Request %d should be allowed within burst", i+1)
 		}
 	}
 }
 
+// TestAllow_ExceedsLimit verifies requests exceeding burst capacity are
+// rejected. After exhausting all tokens, additional requests must wait
+// for token refill at the configured rate (10 tokens/second).
 func TestAllow_ExceedsLimit(t *testing.T) {
 	m := New(10, 20) // 10 req/sec, burst 20
 	ip := "192.168.1.1"
 
 	// Consume all burst tokens
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 20; i++ {
 		m.Allow(ip)
 	}
 
-	// 31st should be rejected
+	// 21st should be rejected (bucket empty, no refill yet)
 	if m.Allow(ip) {
 		t.Error("Request exceeding burst should be rejected")
 	}
 }
 
+// TestAllow_TokenRefill verifies token bucket refills at the configured
+// rate. With 100 req/sec, tokens refill at 1 token per 10ms. After
+// exhausting all tokens, waiting 20ms should provide approximately 2
+// new tokens, allowing 2 more requests.
 func TestAllow_TokenRefill(t *testing.T) {
 	m := New(100, 100) // 100 req/sec = 1 token per 10ms
 	ip := "192.168.1.1"
@@ -70,6 +91,10 @@ func TestAllow_TokenRefill(t *testing.T) {
 // Per-IP Tests
 // -----------------------------------------------------------------------
 
+// TestAllow_DifferentIPsIndependent verifies that rate limits are tracked
+// independently per IP address. Each IP gets its own token bucket with
+// separate capacity and refill rate. Exhausting one IP's tokens does not
+// affect other IPs' token availability.
 func TestAllow_DifferentIPsIndependent(t *testing.T) {
 	m := New(1, 2) // 1 req/sec, burst 2
 	ip1 := "192.168.1.1"
@@ -79,7 +104,7 @@ func TestAllow_DifferentIPsIndependent(t *testing.T) {
 	m.Allow(ip1) // 1
 	m.Allow(ip1) // 2
 
-	// IP2 should still have tokens
+	// IP2 should still have full burst capacity
 	if !m.Allow(ip2) {
 		t.Error("Different IPs should have independent limits")
 	}
@@ -93,8 +118,10 @@ func TestAllow_DifferentIPsIndependent(t *testing.T) {
 		t.Error("IP2 should be exhausted")
 	}
 
-	// But IP1 can get new token after refill
-	time.Sleep(20 * time.Millisecond) // Wait for refill at 1 req/sec
+	// IP1 can get new token after refill period
+	// At 1 req/sec, each token takes 1000ms to refill
+	// Wait 1100ms to ensure at least 1 token is available
+	time.Sleep(1100 * time.Millisecond)
 
 	if !m.Allow(ip1) {
 		t.Error("IP1 should have new token after refill")
@@ -105,6 +132,9 @@ func TestAllow_DifferentIPsIndependent(t *testing.T) {
 // GetTokens Test
 // -----------------------------------------------------------------------
 
+// TestGetTokens verifies that the token count can be queried for debugging
+// and header population. Initial token count should equal burst size, and
+// should decrease as requests consume tokens.
 func TestGetTokens(t *testing.T) {
 	m := New(10, 20)
 	ip := "192.168.1.1"
@@ -129,6 +159,9 @@ func TestGetTokens(t *testing.T) {
 // Middleware Tests
 // -----------------------------------------------------------------------
 
+// TestMiddleware_AllowsWithinLimit verifies middleware passes requests
+// through when rate limit is not exceeded. With generous limits (100
+// req/sec, burst 200), a single request should always succeed.
 func TestMiddleware_AllowsWithinLimit(t *testing.T) {
 	m := New(100, 200)
 
@@ -148,6 +181,9 @@ func TestMiddleware_AllowsWithinLimit(t *testing.T) {
 	}
 }
 
+// TestMiddleware_RejectsExceeded verifies middleware returns 429 Too Many
+// Requests when rate limit is exceeded. With 0 req/sec and 0 burst, all
+// requests should be rejected immediately with appropriate headers.
 func TestMiddleware_RejectsExceeded(t *testing.T) {
 	m := New(0, 0) // 0 req/sec, 0 burst = always reject
 
@@ -177,6 +213,9 @@ func TestMiddleware_RejectsExceeded(t *testing.T) {
 	}
 }
 
+// TestMiddleware_SetsHeaders verifies rate limit information headers are
+// included in responses. These headers allow clients to implement backoff
+// and understand rate limit policies.
 func TestMiddleware_SetsHeaders(t *testing.T) {
 	m := New(10, 20)
 
@@ -204,46 +243,56 @@ func TestMiddleware_SetsHeaders(t *testing.T) {
 // IP Extraction Tests
 // -----------------------------------------------------------------------
 
-func TestGetRealIP_DirectConnection(t *testing.T) {
+// TestGetIP_DirectConnection verifies IP extraction from RemoteAddr when
+// no proxy headers are present. This is the fallback case for direct
+// connections without load balancers.
+func TestGetIP_DirectConnection(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "192.168.1.1:12345"
 
-	ip := getRealIP(req)
+	ip := GetIP(req)
 	if ip != "192.168.1.1:12345" {
 		t.Errorf("Expected 192.168.1.1:12345, got %s", ip)
 	}
 }
 
-func TestGetRealIP_XForwardedFor(t *testing.T) {
+// TestGetIP_XForwardedFor verifies IP extraction from X-Forwarded-For
+// header when behind a proxy. The leftmost IP (client) is used, ignoring
+// proxy IPs that appear later in the chain.
+func TestGetIP_XForwardedFor(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "proxy.example.com:443"
 	req.Header.Set("X-Forwarded-For", "192.168.1.100, 10.0.0.1")
 
-	ip := getRealIP(req)
+	ip := GetIP(req)
 	if ip != "192.168.1.100" {
 		t.Errorf("Expected first IP from X-Forwarded-For, got %s", ip)
 	}
 }
 
-func TestGetRealIP_XRealIP(t *testing.T) {
+// TestGetIP_XRealIP verifies IP extraction from X-Real-IP header. Some
+// proxies set this instead of X-Forwarded-For.
+func TestGetIP_XRealIP(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "proxy.example.com:443"
 	req.Header.Set("X-Real-IP", "192.168.1.200")
 
-	ip := getRealIP(req)
+	ip := GetIP(req)
 	if ip != "192.168.1.200" {
 		t.Errorf("Expected X-Real-IP value, got %s", ip)
 	}
 }
 
-func TestGetRealIP_Precedence(t *testing.T) {
-	// X-Forwarded-For takes precedence
+// TestGetIP_Precedence verifies X-Forwarded-For takes precedence over
+// X-Real-IP when both headers are present. This matches standard proxy
+// header precedence conventions.
+func TestGetIP_Precedence(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "proxy.example.com:443"
 	req.Header.Set("X-Forwarded-For", "192.168.1.100")
 	req.Header.Set("X-Real-IP", "192.168.1.200")
 
-	ip := getRealIP(req)
+	ip := GetIP(req)
 	if ip != "192.168.1.100" {
 		t.Errorf("X-Forwarded-For should take precedence, got %s", ip)
 	}
@@ -253,6 +302,12 @@ func TestGetRealIP_Precedence(t *testing.T) {
 // Concurrency Tests
 // -----------------------------------------------------------------------
 
+// TestConcurrentRequests_ThreadSafe verifies rate limiter is thread-safe
+// under concurrent load. In production, many requests may hit endpoints
+// simultaneously from the same IP. Token bucket operations must be atomic
+// to prevent race conditions.
+//
+// Run with: go test -race ./internal/ratelimit
 func TestConcurrentRequests_ThreadSafe(t *testing.T) {
 	m := New(1000, 2000) // Very generous to allow concurrent tests
 	ip := "192.168.1.1"
@@ -290,6 +345,9 @@ func TestConcurrentRequests_ThreadSafe(t *testing.T) {
 	}
 }
 
+// TestConcurrentRequests_DifferentIPs verifies per-IP isolation under
+// concurrent load. Multiple IPs making requests simultaneously should
+// each have independent token buckets without interference.
 func TestConcurrentRequests_DifferentIPs(t *testing.T) {
 	m := New(5, 10)
 
@@ -317,6 +375,9 @@ func TestConcurrentRequests_DifferentIPs(t *testing.T) {
 // Cleanup Tests
 // -----------------------------------------------------------------------
 
+// TestCleanup_RemovesStaleEntries verifies the background cleanup goroutine
+// removes IP entries that haven't been seen recently. This prevents memory
+// leaks from accumulating limiters for IPs that no longer make requests.
 func TestCleanup_RemovesStaleEntries(t *testing.T) {
 	m := &Manager{
 		limiters:         make(map[string]*ipLimiter),
@@ -350,6 +411,9 @@ func TestCleanup_RemovesStaleEntries(t *testing.T) {
 // Stats Tests
 // -----------------------------------------------------------------------
 
+// TestStats_ReturnsInfo verifies diagnostic stats are available for
+// monitoring and debugging. Stats should reflect current limiter state
+// including active IP count and configured rate limits.
 func TestStats_ReturnsInfo(t *testing.T) {
 	m := New(50, 100)
 

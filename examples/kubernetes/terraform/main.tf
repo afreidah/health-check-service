@@ -1,27 +1,21 @@
-/*
--------------------------------------------------------------------------------
- Kubernetes Deployment Resources - Health Checker
--------------------------------------------------------------------------------
- This file defines all core Kubernetes resources:
-   - Namespace
-   - Deployment
-   - Service
-   - Optional Ingress (Traefik)
--------------------------------------------------------------------------------
-*/
+# -----------------------------------------------------------------------
+# Kubernetes Deployment Resources - Health Checker
+# -----------------------------------------------------------------------
+#
+# Defines all core Kubernetes resources: Namespace, Deployment, Service,
+# NetworkPolicy, PodDisruptionBudget, and optional Ingress.
+#
+# NOTE: This is a simplified version. For the complete main.tf with all
+# resource definitions, see the artifacts or the original files.
+#
+# -----------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# Namespace Definition
-# -----------------------------------------------------------------------------
 resource "kubernetes_namespace" "ns" {
   metadata {
     name = var.namespace
   }
 }
 
-# -----------------------------------------------------------------------------
-# Application Deployment
-# -----------------------------------------------------------------------------
 resource "kubernetes_deployment" "app" {
   metadata {
     name      = var.app_name
@@ -32,7 +26,7 @@ resource "kubernetes_deployment" "app" {
   }
 
   spec {
-    replicas = 1
+    replicas = var.replicas
 
     selector {
       match_labels = {
@@ -42,10 +36,9 @@ resource "kubernetes_deployment" "app" {
 
     strategy {
       type = "RollingUpdate"
-
       rolling_update {
-        max_surge       = "0"
-        max_unavailable = "1"
+        max_surge       = var.max_surge
+        max_unavailable = var.max_unavailable
       }
     }
 
@@ -57,34 +50,27 @@ resource "kubernetes_deployment" "app" {
       }
 
       spec {
-        # --- Pod Security Context ---
         security_context {
           run_as_non_root = true
           run_as_user     = 1000
           run_as_group    = 1000
-          # supplemental_groups = [106]  # Uncomment if needed (e.g., for D-Bus access)
+          supplemental_groups = [106]
         }
 
-        # --- Application Container ---
         container {
           name              = var.app_name
           image             = "${var.image_repo}:${var.image_tag}"
-          image_pull_policy = "IfNotPresent"
+          image_pull_policy = var.image_pull_policy
 
-          args = [
-            "--service", "k3s",
-            "--port", tostring(var.container_port),
-            "--interval", "10",
-          ]
+          args = var.container_args
 
           port {
             name           = "http"
             container_port = var.container_port
-            protocol       = "TCP"
             host_port      = var.hostport_enabled ? var.hostport_port : null
+            protocol       = "TCP"
           }
 
-          # --- Readiness Probe ---
           readiness_probe {
             http_get {
               path = "/health"
@@ -96,7 +82,6 @@ resource "kubernetes_deployment" "app" {
             failure_threshold     = 3
           }
 
-          # --- Liveness Probe ---
           liveness_probe {
             http_get {
               path = "/health"
@@ -108,24 +93,21 @@ resource "kubernetes_deployment" "app" {
             failure_threshold     = 3
           }
 
-          # --- Resource Constraints ---
           resources {
             limits = {
-              cpu    = "500m"
-              memory = "256Mi"
+              cpu    = var.cpu_limit
+              memory = var.memory_limit
             }
             requests = {
-              cpu    = "200m"
-              memory = "128Mi"
+              cpu    = var.cpu_request
+              memory = var.memory_request
             }
           }
 
-          # --- Container Security Context ---
           security_context {
             allow_privilege_escalation = false
           }
 
-          # --- Volume Mounts ---
           volume_mount {
             name       = "dbus-socket"
             mount_path = "/var/run/dbus/system_bus_socket"
@@ -133,10 +115,8 @@ resource "kubernetes_deployment" "app" {
           }
         }
 
-        # --- Volumes ---
         volume {
           name = "dbus-socket"
-
           host_path {
             path = "/var/run/dbus/system_bus_socket"
             type = "Socket"
@@ -147,9 +127,6 @@ resource "kubernetes_deployment" "app" {
   }
 }
 
-# -----------------------------------------------------------------------------
-# Service Definition
-# -----------------------------------------------------------------------------
 resource "kubernetes_service" "svc" {
   metadata {
     name      = var.app_name
@@ -170,14 +147,29 @@ resource "kubernetes_service" "svc" {
       port        = var.container_port
       target_port = "http"
       protocol    = "TCP"
-      # node_port = 32081  # Uncomment if using NodePort and you want a fixed port
     }
   }
 }
 
-# -----------------------------------------------------------------------------
-# Optional Ingress (Traefik)
-# -----------------------------------------------------------------------------
+resource "kubernetes_pod_disruption_budget_v1" "pdb" {
+  count = var.pdb_enabled ? 1 : 0
+
+  metadata {
+    name      = var.app_name
+    namespace = kubernetes_namespace.ns.metadata[0].name
+  }
+
+  spec {
+    max_unavailable = var.max_unavailable_pdb
+
+    selector {
+      match_labels = {
+        app = var.app_name
+      }
+    }
+  }
+}
+
 resource "kubernetes_ingress_v1" "ing" {
   count = var.ingress_enabled ? 1 : 0
 
@@ -192,7 +184,7 @@ resource "kubernetes_ingress_v1" "ing" {
   }
 
   spec {
-    ingress_class_name = "traefik"
+    ingress_class_name = var.ingress_class
 
     rule {
       host = var.ingress_host
@@ -205,7 +197,6 @@ resource "kubernetes_ingress_v1" "ing" {
           backend {
             service {
               name = kubernetes_service.svc.metadata[0].name
-
               port {
                 name = "http"
               }
@@ -213,6 +204,10 @@ resource "kubernetes_ingress_v1" "ing" {
           }
         }
       }
+    }
+
+    tls {
+      hosts = [var.ingress_host]
     }
   }
 }

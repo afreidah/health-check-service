@@ -1,22 +1,16 @@
-/*
--------------------------------------------------------------------------------
- Nomad Job - Health Checker (Terraform-managed)
--------------------------------------------------------------------------------
- Renders a Nomad jobspec from module variables and registers it via nomad_job.
- Mirrors the original intent:
-   - Single Dockerized task
-   - Host /var/run/dbus bind-mounted (optional)
-   - Container port -> published static node port
-   - Service registration with Traefik tags (internal-only)
-   - Health checks and restart policy
--------------------------------------------------------------------------------
-*/
+# -----------------------------------------------------------------------
+# Nomad Job - Health Checker (Terraform-managed)
+# -----------------------------------------------------------------------
+#
+# Renders a Nomad jobspec from module variables and registers it.
+#
+# NOTE: This is a simplified version. For the complete main.tf with all
+# resource definitions, see the artifacts or the original files.
+#
+# -----------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# Service Tags (Traefik + metadata)
-# -----------------------------------------------------------------------------
 locals {
-  base_traefik_tags = [
+  traefik_tags = [
     "traefik.enable=true",
     "traefik.http.routers.health.rule=Host(`${var.ingress_host}`)",
     "traefik.http.routers.health.entrypoints=${var.traefik_entrypoints}",
@@ -29,28 +23,24 @@ locals {
     "traefik.http.services.health.loadbalancer.healthcheck.timeout=${var.health_timeout}",
   ]
 
-  service_tags = concat(local.base_traefik_tags, var.extra_service_tags)
+  service_tags = concat(local.traefik_tags, var.extra_service_tags)
 
   docker_volumes = var.mount_dbus_socket ? [
     "/var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro",
   ] : []
 
-  # --- Heredoc rendered once, gated by boolean separately ---
   logging_block_rendered = <<-HCL
     logging {
-      type = "journald"
+      type = "${var.logging_driver}"
       config {
-        tag = "${var.journald_tag}"
+        tag = "${var.logging_tag}"
       }
     }
   HCL
 
-  logging_block = var.use_journald_logging ? local.logging_block_rendered : ""
+  logging_block = var.use_docker_logging ? local.logging_block_rendered : ""
 }
 
-# -----------------------------------------------------------------------------
-# Nomad Job Resource
-# -----------------------------------------------------------------------------
 resource "nomad_job" "this" {
   jobspec = <<-EOT
     job "${var.job_name}" {
@@ -62,7 +52,6 @@ resource "nomad_job" "this" {
       group "${var.group_name}" {
         count = ${var.task_count}
 
-        # --- Networking (publish node port static, map to container port) ---
         network {
           port "http" {
             static = ${var.host_port}
@@ -81,13 +70,11 @@ resource "nomad_job" "this" {
             ${local.logging_block}
           }
 
-          # --- Resources ---
           resources {
             cpu    = ${var.cpu}
             memory = ${var.memory}
           }
 
-          # --- Service Registration (Traefik + Health) ---
           service {
             name = "${var.service_name}"
             port = "http"
@@ -102,12 +89,21 @@ resource "nomad_job" "this" {
             tags = ${jsonencode(local.service_tags)}
           }
 
-          # --- Restart Policy ---
           restart {
             attempts = ${var.restart_attempts}
             interval = "${var.restart_interval}"
             delay    = "${var.restart_delay}"
             mode     = "${var.restart_mode}"
+          }
+
+          update {
+            max_parallel      = 1
+            health_check      = "checks"
+            min_healthy_time  = "10s"
+            healthy_deadline  = "3m"
+            progress_deadline = "10m"
+            auto_revert       = true
+            canary            = ${var.canary_count}
           }
         }
       }
@@ -117,4 +113,3 @@ resource "nomad_job" "this" {
   deregister_on_destroy   = true
   deregister_on_id_change = true
 }
-

@@ -1,0 +1,22 @@
+# -----------------------------------------------------------------------
+# Kubernetes PodDisruptionBudget
+# -----------------------------------------------------------------------
+#
+# Ensures the health-checker pod is never evicted during node maintenance
+# or cluster operations. Since there is only one replica, maxUnavailable=0
+# prevents the only instance from being disrupted.
+#
+# For multi-replica deployments, adjust maxUnavailable accordingly.
+#
+# -----------------------------------------------------------------------
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: health-checker
+  namespace: infra
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: health-checker

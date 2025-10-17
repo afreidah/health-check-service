@@ -1,0 +1,26 @@
+# -----------------------------------------------------------------------
+# Kubernetes Service
+# -----------------------------------------------------------------------
+#
+# Exposes the health-checker deployment as a service. ClusterIP service type
+# provides internal DNS name for cluster access. Ingress handles external
+# routing and TLS termination.
+#
+# -----------------------------------------------------------------------
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-checker
+  namespace: infra
+  labels:
+    app: health-checker
+spec:
+  selector:
+    app: health-checker
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 18081
+      targetPort: http
+      protocol: TCP

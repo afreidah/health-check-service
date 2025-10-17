@@ -1,0 +1,14 @@
+# -----------------------------------------------------------------------
+# Kubernetes Namespace
+# -----------------------------------------------------------------------
+#
+# Isolates the health-checker deployment and its resources into a dedicated
+# namespace. This prevents resource conflicts with other workloads and
+# simplifies access control via RBAC.
+#
+# -----------------------------------------------------------------------
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra

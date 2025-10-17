@@ -1,0 +1,58 @@
+# -----------------------------------------------------------------------
+# Kubernetes NetworkPolicy
+# -----------------------------------------------------------------------
+#
+# Restricts network access to the health-checker. Allows ingress from
+# Traefik only, and permits DNS/egress for external communication.
+#
+# Note: Requires a network policy provider (Calico, Cilium, etc.).
+# Omit if not running network policies in your cluster.
+#
+# -----------------------------------------------------------------------
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: health-checker
+  namespace: infra
+spec:
+  podSelector:
+    matchLabels:
+      app: health-checker
+
+  # Ingress: Allow from Traefik only
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system  # Adjust namespace where Traefik runs
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 18081
+
+  # Egress: Allow DNS and HTTP/HTTPS (for potential D-Bus/systemd logging)
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # HTTP/HTTPS (if needed for external logging or APIs)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+
+  policyTypes:
+    - Ingress
+    - Egress

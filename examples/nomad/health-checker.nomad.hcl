@@ -1,31 +1,26 @@
-# ------------------------------------------------------------------------------
-# Health Checker — Go service (internal-only, Traefik on *.munchbox)
-# ------------------------------------------------------------------------------
-# What this job does
-# - Runs a single containerized health-checker service.
-# - Binds host /var/run/dbus into the container (matches docker run).
-# - Publishes container port 8080 to the node on static port 18080.
-# - Registers a Nomad service with Traefik labels for INTERNAL access only:
-#     * Host: health.munchbox
-#     * EntryPoint: websecure (TLS), LAN-only middleware.
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Nomad Job Specification - Health Checker
+# -----------------------------------------------------------------------
+#
+# Deploys a containerized health-checker service via Docker driver.
+# Monitors systemd services and registers with Consul for service discovery.
+# Includes Traefik tags for internal HTTPS routing with LAN restriction.
+#
+# -----------------------------------------------------------------------
 
 job "health-checker" {
   region      = "global"
-  datacenters = ["pi-dc"]
+  datacenters = ["dc1"]
   node_pool   = "all"
   type        = "service"
 
   group "app" {
     count = 1
 
-    # --------------------------------------------------------------------------
-    # Networking — publish container :8080 to node :18080 (static)
-    #   - Traefik will forward to this published node port.
-    # --------------------------------------------------------------------------
     network {
       port "http" {
         static = 18080
+        to     = 8080
       }
     }
 
@@ -33,13 +28,12 @@ job "health-checker" {
       driver = "docker"
 
       config {
-        image = "docker-mirror.service.consul:5000/health-checker"
-        ports = ["http"]
+        image   = "docker-mirror.service.consul:5000/health-checker:latest"
+        ports   = ["http"]
         volumes = [
           "/var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro"
         ]
 
-        # Container logging via journald
         logging {
           type = "journald"
           config {
@@ -47,26 +41,25 @@ job "health-checker" {
           }
         }
 
-        # Override ENTRYPOINT/CMD
-        args = ["--service", "k3s", "--port", "18080", "--interval", "10"]
+        args = ["--service", "nginx", "--port", "8080", "--interval", "10"]
       }
 
-      # ------------------------------------------------------------------------
-      # Resources 
-      # ------------------------------------------------------------------------
       resources {
         cpu    = 200
         memory = 128
       }
 
-      # ------------------------------------------------------------------------
-      # Service Registration — Traefik (INTERNAL ONLY) + health checks
-      # ------------------------------------------------------------------------
+      restart {
+        attempts = 2
+        interval = "30s"
+        delay    = "5s"
+        mode     = "fail"
+      }
+
       service {
         name = "health-checker"
         port = "http"
 
-        # Nomad HTTP health check (container listens on 8080)
         check {
           type     = "http"
           path     = "/health"
@@ -76,41 +69,28 @@ job "health-checker" {
 
         tags = [
           "traefik.enable=true",
-
-          # ------------------------- INTERNAL ROUTER ----------------------------
-          # Internal-only DNS host
           "traefik.http.routers.health.rule=Host(`health.munchbox`)",
           "traefik.http.routers.health.entrypoints=websecure",
           "traefik.http.routers.health.tls=true",
-
-          # Restrict internal router to LAN (middleware defined in Traefik file provider)
           "traefik.http.routers.health.middlewares=dashboard-allowlan@file",
-
-          # ------------------------- SERVICE (BACKEND) --------------------------
-          # Point Traefik at the Nomad-published *node* port
           "traefik.http.services.health.loadbalancer.server.port=18080",
           "traefik.http.services.health.loadbalancer.server.scheme=http",
-
-          # Traefik's own active healthcheck against backend
           "traefik.http.services.health.loadbalancer.healthcheck.path=/health",
           "traefik.http.services.health.loadbalancer.healthcheck.interval=30s",
           "traefik.http.services.health.loadbalancer.healthcheck.timeout=5s",
-
-          # ------------------------- METADATA -----------------------------------
-          "go",
-          "health",
-          "monitoring"
+          "monitoring=true",
+          "lang=go",
         ]
       }
 
-      # ------------------------------------------------------------------------
-      # Restart policy 
-      # ------------------------------------------------------------------------
-      restart {
-        attempts = 2
-        interval = "30s"
-        delay    = "5s"
-        mode     = "fail"
+      update {
+        max_parallel      = 1
+        health_check      = "checks"
+        min_healthy_time  = "10s"
+        healthy_deadline  = "3m"
+        progress_deadline = "10m"
+        auto_revert       = true
+        canary            = 0
       }
     }
   }

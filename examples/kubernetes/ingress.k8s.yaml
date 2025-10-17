@@ -1,0 +1,34 @@
+# -----------------------------------------------------------------------
+# Kubernetes Ingress (Traefik)
+# -----------------------------------------------------------------------
+#
+# Routes external HTTPS traffic to the health-checker service via Traefik.
+# Requires Traefik IngressController to be installed. Update ingressClassName
+# if using a different ingress controller.
+#
+# -----------------------------------------------------------------------
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: health-checker
+  namespace: infra
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: health.example.com  # Update to your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: health-checker
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - health.example.com  # Update to your domain

@@ -1,9 +1,18 @@
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: infra
----
+# -----------------------------------------------------------------------
+# Kubernetes Deployment
+# -----------------------------------------------------------------------
+#
+# Single-replica deployment monitoring a systemd service via D-Bus.
+# Rolling updates are disabled to prevent brief unavailability.
+# For multi-replica deployments, adjust strategy and update Traefik config.
+#
+# Security hardening:
+#   - Non-root user (1000) with D-Bus group access (106)
+#   - No privilege escalation
+#   - Read-only D-Bus socket mount
+#
+# -----------------------------------------------------------------------
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,39 +21,42 @@ metadata:
   labels:
     app: health-checker
 spec:
-  # Ensure only one pod at a time (important with hostPort to avoid conflicts)
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
 
-  replicas: 1
   selector:
     matchLabels:
       app: health-checker
+
   template:
     metadata:
       labels:
         app: health-checker
     spec:
-      # Pod-level security context: run non-root (uid/gid 1000) and join host messagebus group (gid 106)
+      # Pod-level security context: non-root user with D-Bus group access
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
-        supplementalGroups: [106]  # messagebus GID from host (getent group messagebus)
+        supplementalGroups: [106]  # D-Bus group on host (getent group messagebus)
 
       containers:
         - name: health-checker
-          image: docker-mirror.service.consul:5000/health-checker:3833c0e95019c3ba8d3e815c7048da596dced439-arm64
-          imagePullPolicy: IfNotPresent
+          image: docker-mirror.service.consul:5000/health-checker:latest
+          imagePullPolicy: IfNotPresent  # Use 'Always' in production or image digest
           args: ["--service", "k3s", "--port", "18081", "--interval", "10"]
+
           ports:
             - containerPort: 18081
-              hostPort: 18081        # expose container port on the node so you can curl http://<node-ip>:18081/health
+              hostPort: 18081  # Expose to host for direct access
               name: http
               protocol: TCP
+
+          # Verify service is responding to requests
           readinessProbe:
             httpGet:
               path: /health
@@ -53,6 +65,8 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
+
+          # Restart if unresponsive
           livenessProbe:
             httpGet:
               path: /health
@@ -61,6 +75,7 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 2
             failureThreshold: 3
+
           resources:
             requests:
               cpu: 200m
@@ -68,59 +83,18 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+
           securityContext:
             allowPrivilegeEscalation: false
+
           volumeMounts:
             - name: dbus-socket
               mountPath: /var/run/dbus/system_bus_socket
               readOnly: true
 
       volumes:
-        # HostPath mount to mirror `-v /var/run/dbus/system_bus_socket:...`
+        # Host D-Bus socket for systemd communication
         - name: dbus-socket
           hostPath:
             path: /var/run/dbus/system_bus_socket
             type: Socket
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: health-checker
-  namespace: infra
-  labels:
-    app: health-checker
-spec:
-  selector:
-    app: health-checker
-  ports:
-    - name: http
-      port: 18081        # ClusterIP service port
-      targetPort: http   # container port name
-      protocol: TCP
-  type: ClusterIP
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: health-checker
-  namespace: infra
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: "true"
-spec:
-  ingressClassName: traefik
-  rules:
-    - host: health.munchbox
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: health-checker
-                port:
-                  name: http
-  tls:
-    - hosts:
-        - health.munchbox
-

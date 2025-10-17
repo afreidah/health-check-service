@@ -1,6 +1,4 @@
-// -----------------------------------------------------------------------------
-// HTTP Handlers - Tests
-// -----------------------------------------------------------------------------
+// Package handlers provides tests for HTTP endpoint handlers.
 //
 // This test suite validates the health check endpoint handler behavior under
 // various conditions. Since this endpoint is the primary interface for
@@ -13,45 +11,41 @@
 //   - Ensure handler works with any HTTP method
 //
 // Why These Tests Matter:
-//   Incorrect status codes would cause monitoring systems to:
-//     - Miss actual outages (false negatives)
-//     - Trigger false alerts (false positives)
-//     - Make incorrect routing/load balancing decisions
+//
+//	Incorrect status codes would cause monitoring systems to:
+//	  - Miss actual outages (false negatives)
+//	  - Trigger false alerts (false positives)
+//	  - Make incorrect routing/load balancing decisions
 //
 // Run with race detector: go test -race
-//
-// -----------------------------------------------------------------------------
-
 package handlers
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/afreidah/health-check-service/internal/cache"
 )
 
-// -----------------------------------------------------------------------------
 // Basic Status Code Tests
-// -----------------------------------------------------------------------------
+//
+// These tests verify that the handler returns correct HTTP status codes
+// for different service states.
 
 // TestHealthHandlerReturnsOK verifies handler returns 200 when service is
 // healthy (active). This is the success case that monitoring systems look for.
 func TestHealthHandlerReturnsOK(t *testing.T) {
-	// Simulate background checker updating cache with healthy status
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
 
-	// Create mock HTTP request
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 
-	// Call handler
 	HealthHandler(w, req, c)
 
-	// Verify correct status code returned
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
@@ -91,9 +85,10 @@ func TestHealthHandlerReturnsInternalServerError(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
 // Table-Driven Tests
-// -----------------------------------------------------------------------------
+//
+// These tests use table-driven testing to verify multiple scenarios in
+// a single test, improving coverage and maintainability.
 
 // TestHealthHandlerMultipleStatusCodes uses table-driven testing to verify
 // all possible status codes and service states in a single test. This ensures
@@ -114,17 +109,14 @@ func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Setup cache with test state
 			c := cache.New()
 			c.UpdateStatus(tt.cacheStatus, tt.cacheState)
 
 			req := httptest.NewRequest("GET", "/health", nil)
 			w := httptest.NewRecorder()
 
-			// Execute handler
 			HealthHandler(w, req, c)
 
-			// Assert expected status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
@@ -132,9 +124,11 @@ func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
 // HTTP Method Tests
-// -----------------------------------------------------------------------------
+//
+// These tests verify the handler works with any HTTP method. While GET is
+// standard for health checks, some monitoring systems or load balancers
+// may use HEAD or OPTIONS.
 
 // TestHealthHandlerWithDifferentHTTPMethods verifies the handler works with
 // any HTTP method. While GET is standard for health checks, some monitoring
@@ -152,7 +146,6 @@ func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 
 			HealthHandler(w, req, c)
 
-			// Handler doesn't check method, so all should return 200
 			if w.Code != http.StatusOK {
 				t.Errorf("Method %s: expected status %d, got %d", method, http.StatusOK, w.Code)
 			}
@@ -160,9 +153,9 @@ func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
 // Concurrency Tests
-// -----------------------------------------------------------------------------
+//
+// These tests verify the handler is thread-safe under high concurrent load.
 
 // TestHealthHandlerConcurrentRequests verifies the handler is thread-safe
 // under high concurrent load. In production, many HTTP requests may hit the
@@ -176,7 +169,6 @@ func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
 
-	// Channel for synchronization
 	done := make(chan bool, 100)
 
 	// Fire off 100 concurrent HTTP requests
@@ -201,8 +193,13 @@ func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	}
 }
 
+// Stale Data Tests
+//
+// These tests verify stale data detection and warning header behavior.
+
 // TestHealthHandlerStaleDataWarning verifies that the handler adds a Warning
-// header when the cached data is stale.
+// header when the cached data is stale. The header now includes the age
+// of the data for operational visibility.
 func TestHealthHandlerStaleDataWarning(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
@@ -220,9 +217,15 @@ func TestHealthHandlerStaleDataWarning(t *testing.T) {
 		t.Error("Expected Warning header for stale data, got none")
 	}
 
-	expectedWarning := "199 - Stale health check data"
-	if warning != expectedWarning {
-		t.Errorf("Expected Warning header '%s', got '%s'", expectedWarning, warning)
+	// Check that warning contains the expected parts
+	expectedPrefix := "199 - Stale health check data"
+	if !strings.HasPrefix(warning, expectedPrefix) {
+		t.Errorf("Expected Warning header to start with '%s', got '%s'", expectedPrefix, warning)
+	}
+
+	// Verify it includes age information
+	if !strings.Contains(warning, "age:") {
+		t.Errorf("Expected Warning header to include age, got '%s'", warning)
 	}
 
 	if w.Code != http.StatusOK {

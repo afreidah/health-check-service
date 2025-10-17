@@ -1,9 +1,17 @@
-# ------------------------------------------------------------------------------
-# Docker Compose - Health Check Service
+# -----------------------------------------------------------------------
+# Docker Compose - Local Development
+# -----------------------------------------------------------------------
 #
-# For local testing and development
-# Usage: docker compose up
-# ------------------------------------------------------------------------------
+# Standalone development environment for testing the health checker locally.
+# Mounts host D-Bus socket for systemd integration and network_mode=host
+# for direct access to host services.
+#
+# Usage:
+#   Start:  docker compose up
+#   Stop:   docker compose down
+#   Logs:   docker compose logs -f health-checker
+#
+# -----------------------------------------------------------------------
 
 services:
   health-checker:

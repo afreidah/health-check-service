@@ -1,14 +1,14 @@
-// -----------------------------------------------------------------------------
-// App Module
-// -----------------------------------------------------------------------------
-// Core application wiring for the Health Check Service:
-// - Slog initialization and build metadata wiring
-// - HTTP server + TLS setup
-// - Systemd (D-Bus) connection and background checker
-// - Graceful shutdown handling
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Application Orchestration and Lifecycle
+// -----------------------------------------------------------------------
+//
+// Package app provides core application orchestration for the health check
+// service. It coordinates configuration loading, D-Bus connectivity, HTTP
+// server setup, background checker lifecycle, and graceful shutdown sequences.
+// All major components are initialized and their lifecycles managed here.
+//
+// -----------------------------------------------------------------------
 
-// Package app
 package app
 
 import (
@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,29 +28,32 @@ import (
 	"github.com/afreidah/health-check-service/internal/config"
 	"github.com/afreidah/health-check-service/internal/handlers"
 	"github.com/afreidah/health-check-service/internal/logging"
+	"github.com/afreidah/health-check-service/internal/metrics"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// link-time vars (set via Makefile -ldflags)
+// Build-time metadata injected via linker flags during compilation.
 var (
-	// These are intended to be set via -ldflags at build time.
-	// Example:
-	//   -X 'github.com/afreidah/health-check-service/internal/app.version=${VERSION}'
-	//   -X 'github.com/afreidah/health-check-service/internal/app.commit=${GIT_SHA}'
-	//   -X 'github.com/afreidah/health-check-service/internal/app.date=${BUILD_DATE}'
 	version = "dev"
 	commit  = "unknown"
 	date    = "unknown"
 )
 
-// component-scoped logger
 var loga = slog.Default().With("component", "app")
 
-// MustLoadConfig loads and validates configuration or exits
+// -----------------------------------------------------------------------
+// Configuration & D-Bus Setup
+// -----------------------------------------------------------------------
+
+// MustLoadConfig loads application configuration from environment variables
+// and performs validation. If configuration is invalid or incomplete, the
+// service logs an error and exits with status code 1. The logger is
+// initialized twice: first with generic metadata, then re-initialized with
+// the monitored service name as a permanent log context field.
 func MustLoadConfig() *config.Config {
-	// initialize structured logging first so any errors are emitted via slog
+	// Initialize structured logging first with generic metadata
 	logging.InitFromEnv(map[string]string{
 		"service":    "health-check-service",
 		"version":    version,
@@ -63,10 +67,10 @@ func MustLoadConfig() *config.Config {
 		os.Exit(1)
 	}
 
-	// now that we know the monitored unit, re-init to include it as a static tag
+	// Re-initialize logging with the monitored service name as static context
 	logging.InitFromEnv(map[string]string{
 		"service":    "health-check-service",
-		"unit":       cfg.Service, // systemd unit name
+		"unit":       cfg.Service,
 		"version":    version,
 		"commit":     commit,
 		"build_date": date,
@@ -87,27 +91,38 @@ func MustLoadConfig() *config.Config {
 	return cfg
 }
 
-// MustConnectDBus establishes D-Bus connection and validates service exists
+// MustConnectDBus establishes a connection to the systemd D-Bus service and
+// validates that the target service exists in the current systemd
+// configuration. If the connection fails or the service cannot be found, the
+// application exits with status code 1 after logging the error condition.
 func MustConnectDBus(ctx context.Context, cfg *config.Config) *dbus.Conn {
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
-		slog.Error("failed to connect to D-Bus", "err", err)
+		loga.Error("failed to connect to D-Bus", "err", err)
 		os.Exit(1)
 	}
 
-	// Validate service exists
+	// Validate that the target service exists in systemd before proceeding
 	if _, err := conn.GetUnitPropertyContext(ctx, cfg.Service+".service", "ActiveState"); err != nil {
-		slog.Error("service not found in systemd", "service", cfg.Service, "err", err)
+		loga.Error("service not found in systemd", "service", cfg.Service, "err", err)
 		os.Exit(1)
 	}
-	slog.Info("successfully validated service", "service", cfg.Service)
+	loga.Info("successfully validated service", "service", cfg.Service)
 
 	return conn
 }
 
-// SetupHTTPServer configures routes and TLS
+// -----------------------------------------------------------------------
+// HTTP Server Setup
+// -----------------------------------------------------------------------
+
+// SetupHTTPServer initializes the HTTP server with routes for the dashboard,
+// health check endpoint, status API, and Prometheus metrics. TLS settings
+// are applied based on configuration. The server is not started; this
+// function only performs configuration and returns the server instance for
+// later startup.
 func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashboardHTML []byte) *http.Server {
-	// Dashboard route
+	// Dashboard route serves the embedded React frontend
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if _, err := w.Write(dashboardHTML); err != nil {
@@ -115,17 +130,17 @@ func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashb
 		}
 	})
 
-	// Health endpoint
+	// Health endpoint returns service status with appropriate HTTP status code
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		handlers.HealthHandler(w, r, serviceCache)
 	})
 
-	// Status API
+	// Status API returns detailed health information as JSON
 	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		handlers.StatusAPIHandler(w, r, serviceCache, cfg.Service)
 	})
 
-	// Prometheus metrics
+	// Metrics endpoint exports Prometheus-formatted metrics
 	http.Handle("/metrics", promhttp.Handler())
 
 	srv := &http.Server{
@@ -135,15 +150,19 @@ func SetupHTTPServer(cfg *config.Config, serviceCache *cache.ServiceCache, dashb
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Configure TLS
+	// Apply TLS configuration if enabled
 	configureTLS(srv, cfg)
 
 	return srv
 }
 
-// configureTLS sets up TLS configuration
+// configureTLS sets up TLS configuration for the server based on the provided
+// configuration. Three modes are supported: Let's Encrypt ACME with autocert,
+// manual certificate files, and plain HTTP (no TLS). In autocert mode, a
+// background goroutine is started to handle ACME challenges on port 80.
 func configureTLS(srv *http.Server, cfg *config.Config) {
 	if cfg.TLSAutocert {
+		// Let's Encrypt ACME mode with automatic certificate renewal
 		certManager := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(cfg.TLSAutocertDomain),
@@ -156,17 +175,18 @@ func configureTLS(srv *http.Server, cfg *config.Config) {
 			MinVersion:     tls.VersionTLS12,
 		}
 
-		slog.Info("Let's Encrypt autocert enabled", "domain", cfg.TLSAutocertDomain)
+		loga.Info("Let's Encrypt autocert enabled", "domain", cfg.TLSAutocertDomain)
 
-		// Start HTTP server for ACME challenges
+		// Start HTTP server on port 80 to handle ACME challenges (required by Let's Encrypt)
 		go func() {
-			slog.Info("starting HTTP server for ACME challenges", "addr", ":80")
+			loga.Info("starting HTTP server for ACME challenges", "addr", ":80")
 			if err := http.ListenAndServe(":80", certManager.HTTPHandler(nil)); err != nil {
-				slog.Error("ACME challenge server error", "err", err)
+				loga.Error("ACME challenge server error", "err", err)
 			}
 		}()
 
 	} else if cfg.TLSEnabled {
+		// Manual TLS mode using provided certificate and key files
 		srv.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			CipherSuites: []uint16{
@@ -179,25 +199,110 @@ func configureTLS(srv *http.Server, cfg *config.Config) {
 	}
 }
 
-// StartBackgroundChecker starts the service monitoring goroutine
-func StartBackgroundChecker(conn *dbus.Conn, cfg *config.Config, serviceCache *cache.ServiceCache) context.CancelFunc {
+// -----------------------------------------------------------------------
+// Background Checker Setup
+// -----------------------------------------------------------------------
+
+// StartBackgroundChecker launches the background service monitoring goroutine
+// and the checker health watchdog. It returns a context cancellation function
+// for clean shutdown and a CheckerHealth handle for health monitoring. The
+// background checker runs at the configured interval and updates the shared
+// service cache with results.
+func StartBackgroundChecker(
+	conn *dbus.Conn,
+	cfg *config.Config,
+	serviceCache *cache.ServiceCache,
+) (context.CancelFunc, *checker.CheckerHealth) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	checkerHealth := checker.NewCheckerHealth()
 	interval := time.Duration(cfg.Interval) * time.Second
-	go checker.StartServiceChecker(ctx, conn, cfg.Service, serviceCache, interval)
 
-	return cancel
+	go checker.StartServiceChecker(ctx, conn, cfg.Service, serviceCache, interval, checkerHealth)
+
+	// Start watchdog goroutine to monitor checker responsiveness
+	go startCheckerWatchdog(ctx, cfg, serviceCache, checkerHealth)
+
+	return cancel, checkerHealth
 }
 
-// StartHTTPServer starts the HTTP/HTTPS server in a goroutine
+// startCheckerWatchdog periodically checks whether the background checker
+// goroutine is responding and updating health information. If the checker
+// fails to update within the expected time window, the watchdog logs an
+// alert, sets the checker health metric to 0, and continues monitoring for
+// recovery. The watchdog checks every 10 seconds and considers the checker
+// unhealthy if its last update exceeds 2x the configured check interval.
+//
+// Metrics Updated:
+//   - health_checker_healthy: Set to 1 when checker is responsive, 0 when stuck
+//   - health_checker_last_check_timestamp_seconds: Updated with current cache timestamp
+func startCheckerWatchdog(
+	ctx context.Context,
+	cfg *config.Config,
+	serviceCache *cache.ServiceCache,
+	checkerHealth *checker.CheckerHealth,
+) {
+	// Watchdog check interval and health threshold
+	maxCheckerAge := time.Duration(cfg.Interval*2) * time.Second
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	var isHealthy bool
+
+	for {
+		select {
+		case <-ticker.C:
+			// Evaluate checker health by comparing last update timestamp
+			wasHealthy := isHealthy
+			isHealthy = checkerHealth.IsHealthy(maxCheckerAge)
+
+			// Update Prometheus metrics to reflect checker health
+			if isHealthy {
+				metrics.CheckerHealthy.Set(1)
+			} else {
+				metrics.CheckerHealthy.Set(0)
+			}
+
+			// Log state transitions for operational visibility
+			if isHealthy != wasHealthy {
+				if isHealthy {
+					loga.Info("checker watchdog: checker recovered")
+				} else {
+					loga.Error("checker watchdog: checker is not responding",
+						"max_age", maxCheckerAge.String(),
+						"service", cfg.Service)
+				}
+			}
+
+			// Update gauge with timestamp of the most recent health check
+			metrics.CheckerLastCheckTimestamp.Set(float64(serviceCache.GetLastChecked().Unix()))
+
+		case <-ctx.Done():
+			loga.Info("stopping checker watchdog")
+			metrics.CheckerHealthy.Set(0)
+			return
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// HTTP Server Start
+// -----------------------------------------------------------------------
+
+// StartHTTPServer launches the HTTP/HTTPS server in a background goroutine.
+// The server mode (HTTP, TLS with manual certs, or TLS with Let's Encrypt)
+// is determined by the configuration. Startup information is logged to assist
+// with operational debugging. If the server fails to start, an error is
+// logged and the process exits with status code 1.
 func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 	go func() {
 		var err error
 
 		if cfg.TLSAutocert {
-			slog.Info("monitoring (HTTPS with Let's Encrypt)",
+			loga.Info("monitoring (HTTPS with Let's Encrypt)",
 				"service", cfg.Service, "port", cfg.Port, "domain", cfg.TLSAutocertDomain)
-			slog.Info("endpoints",
+			loga.Info("endpoints",
 				"dashboard", fmt.Sprintf("https://%s:%d/", cfg.TLSAutocertDomain, cfg.Port),
 				"health", fmt.Sprintf("https://%s:%d/health", cfg.TLSAutocertDomain, cfg.Port),
 				"api", fmt.Sprintf("https://%s:%d/api/status", cfg.TLSAutocertDomain, cfg.Port),
@@ -205,9 +310,9 @@ func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 			)
 			err = srv.ListenAndServeTLS("", "")
 		} else if cfg.TLSEnabled {
-			slog.Info("monitoring (HTTPS with manual certs)",
+			loga.Info("monitoring (HTTPS with manual certs)",
 				"service", cfg.Service, "port", cfg.Port)
-			slog.Info("endpoints",
+			loga.Info("endpoints",
 				"dashboard", fmt.Sprintf("https://localhost:%d/", cfg.Port),
 				"health", fmt.Sprintf("https://localhost:%d/health", cfg.Port),
 				"api", fmt.Sprintf("https://localhost:%d/api/status", cfg.Port),
@@ -215,8 +320,8 @@ func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 			)
 			err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 		} else {
-			slog.Info("monitoring (HTTP)", "service", cfg.Service, "port", cfg.Port)
-			slog.Info("endpoints",
+			loga.Info("monitoring (HTTP)", "service", cfg.Service, "port", cfg.Port)
+			loga.Info("endpoints",
 				"dashboard", fmt.Sprintf("http://localhost:%d/", cfg.Port),
 				"health", fmt.Sprintf("http://localhost:%d/health", cfg.Port),
 				"api", fmt.Sprintf("http://localhost:%d/api/status", cfg.Port),
@@ -226,30 +331,94 @@ func StartHTTPServer(srv *http.Server, cfg *config.Config) {
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			slog.Error("http server failed", "err", err)
+			loga.Error("http server failed", "err", err)
 			os.Exit(1)
 		}
 	}()
 }
 
-// WaitForShutdown blocks until shutdown signal, then gracefully stops
+// -----------------------------------------------------------------------
+// Graceful Shutdown
+// -----------------------------------------------------------------------
+
+// WaitForShutdown blocks until receiving a termination signal (SIGTERM or
+// SIGINT), then initiates graceful shutdown of the checker and HTTP server.
+// Shutdown follows a phased approach: the background checker is stopped first
+// (5s timeout), followed by the HTTP server (remaining time from 30s overall
+// budget). If shutdown exceeds the overall 30-second deadline, the server is
+// forcefully closed. This function logs all shutdown phases for operational
+// observability.
 func WaitForShutdown(srv *http.Server, cancelChecker context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	<-sigChan
-	slog.Info("shutdown signal received; gracefully shutting down...")
+	loga.Info("shutdown signal received; starting graceful shutdown")
 
-	// Stop background checker first
-	cancelChecker()
+	// Overall shutdown context with timeout
+	shutdownTimeout := 30 * time.Second
+	shutdownStart := time.Now()
+	shutdownDeadline := shutdownStart.Add(shutdownTimeout)
 
-	// Shutdown HTTP server with timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Use WaitGroup to track shutdown phases
+	var wg sync.WaitGroup
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server shutdown error", "err", err)
+	// Phase 1: Stop background checker (should complete within 5 seconds)
+	checkerDeadline := time.Now().Add(5 * time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		loga.Info("stopping background checker...")
+		cancelChecker()
+
+		// Brief delay to allow goroutine to respect cancellation
+		time.Sleep(100 * time.Millisecond)
+		loga.Info("background checker stopped")
+
+		if time.Now().After(checkerDeadline) {
+			loga.Warn("checker shutdown exceeded deadline")
+		}
+	}()
+
+	// Wait for checker to stop with respect to overall timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		loga.Debug("checker shutdown completed on time")
+	case <-time.After(time.Until(shutdownDeadline)):
+		loga.Error("checker shutdown exceeded overall timeout",
+			"timeout", shutdownTimeout.String())
 	}
 
-	slog.Info("server stopped")
+	// Phase 2: Shutdown HTTP server with remaining time budget
+	remainingTime := time.Until(shutdownDeadline)
+	if remainingTime <= 0 {
+		remainingTime = 5 * time.Second // Minimum grace period for HTTP shutdown
+	}
+
+	httpShutdownCtx, cancel := context.WithTimeout(context.Background(), remainingTime)
+	defer cancel()
+
+	loga.Info("shutting down HTTP server",
+		"timeout", remainingTime.String())
+
+	if err := srv.Shutdown(httpShutdownCtx); err != nil {
+		loga.Error("HTTP server shutdown error", "err", err)
+	}
+
+	// Phase 3: Force close if shutdown deadline is exceeded
+	if time.Now().After(shutdownDeadline) {
+		loga.Warn("shutdown exceeded total timeout; force closing")
+		if err := srv.Close(); err != nil {
+			loga.Error("Failed to force close connection", "err", err)
+		}
+	}
+
+	elapsed := time.Since(shutdownStart)
+	loga.Info("graceful shutdown complete", "elapsed", elapsed.String())
 }

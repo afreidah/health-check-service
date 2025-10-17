@@ -1,28 +1,12 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Prometheus Metrics - Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //
-// This test suite validates the Prometheus metrics definitions and verifies
-// they function correctly. While these tests might seem simple, they catch
-// real issues that could break production monitoring.
+// Package metrics_test validates Prometheus metrics definitions and verifies
+// they function correctly. Broken metrics prevent monitoring and alerting,
+// making these tests critical for production reliability.
 //
-// Why Test Metrics?
-//   - Broken metrics = blind monitoring (no alerts, no visibility)
-//   - Registration failures crash the application at startup
-//   - Label mismatches prevent metric aggregation in Prometheus
-//   - Type errors (Counter vs Gauge) break query assumptions
-//
-// Test Strategy:
-//   - Use prometheus/testutil for metric validation
-//   - Verify each metric type's specific operations
-//   - Test label cardinality doesn't explode
-//   - Ensure metrics survive package initialization
-//
-// Limitations:
-//   Histograms can't be fully validated with testutil.ToFloat64, so we use
-//   CollectAndCount to verify they at least register observations.
-//
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 package metrics
 
@@ -32,18 +16,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Registration Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestMetricsRegistration verifies all metrics were successfully registered
-// during package initialization. The init() function already ran when this
-// package loaded, so we just verify the metrics exist and aren't nil.
-//
-// Why This Matters:
-//
-//	If metrics fail to register (e.g., duplicate names), the init() function
-//	will panic and crash the service at startup. This test catches that early.
+// during package initialization. If metrics fail to register (duplicate names,
+// invalid configuration), the init() function panics at startup, preventing
+// the service from starting.
 func TestMetricsRegistration(t *testing.T) {
 	// Verify metrics exist after init() completed
 	if RequestsTotal == nil {
@@ -57,17 +37,13 @@ func TestMetricsRegistration(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Counter Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestRequestsTotalIncrement verifies the counter increments correctly.
-// Counters must be monotonically increasing - they should never decrease.
-//
-// Real-World Usage:
-//
-//	This counter tracks request volume and error rates. Broken counters would
-//	prevent monitoring systems from calculating rates like req/sec.
+// Counters must be monotonically increasing; broken counters would prevent
+// monitoring systems from calculating rates like requests per second.
 func TestRequestsTotalIncrement(t *testing.T) {
 	// Get baseline value (may not be zero due to other tests)
 	before := testutil.ToFloat64(RequestsTotal.WithLabelValues("200"))
@@ -85,19 +61,14 @@ func TestRequestsTotalIncrement(t *testing.T) {
 
 // TestMultipleLabelValues verifies counters work with different labels.
 // Each unique label combination creates a separate metric series in Prometheus.
-//
-// Label Cardinality:
-//
-//	We test multiple status codes to ensure labels work, but in production
-//	we limit to 3 values (200, 503, 500) to avoid metric explosion.
 func TestMultipleLabelValues(t *testing.T) {
 	tests := []struct {
 		statusCode string
 		expected   bool
 	}{
-		{"200", true}, // Success
-		{"503", true}, // Service unavailable
-		{"500", true}, // Internal error
+		{"200", true},
+		{"503", true},
+		{"500", true},
 	}
 
 	for _, tt := range tests {
@@ -114,17 +85,14 @@ func TestMultipleLabelValues(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Gauge Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestServiceStatusSet verifies the gauge can be set to arbitrary values.
-// Unlike counters, gauges can increase or decrease and be set to any value.
-//
-// Real-World Usage:
-//
-//	This gauge represents current service health. It must accurately reflect
-//	state changes (active -> inactive -> active) for alerts to work correctly.
+// Unlike counters, gauges can increase or decrease. Broken gauges would fail
+// to accurately reflect state changes (active -> inactive -> active) needed
+// for alerting.
 func TestServiceStatusSet(t *testing.T) {
 	// Set gauge to 1 (service active)
 	ServiceStatus.WithLabelValues("nginx", "active").Set(1)
@@ -147,21 +115,15 @@ func TestServiceStatusSet(t *testing.T) {
 
 // TestServiceStatusMultipleServices verifies the gauge tracks multiple
 // services independently. Each service gets its own metric series.
-//
-// Label Cardinality Note:
-//
-//	In production, we typically monitor 1 service per instance, but the
-//	metric supports multiple services if needed for testing or multi-service
-//	monitoring.
 func TestServiceStatusMultipleServices(t *testing.T) {
 	services := []struct {
 		name  string
 		state string
 		value float64
 	}{
-		{"nginx", "active", 1},        // Healthy web server
-		{"postgresql", "inactive", 0}, // Stopped database
-		{"redis", "failed", 0},        // Failed cache
+		{"nginx", "active", 1},
+		{"postgresql", "inactive", 0},
+		{"redis", "failed", 0},
 	}
 
 	for _, svc := range services {
@@ -178,24 +140,14 @@ func TestServiceStatusMultipleServices(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Histogram Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestRequestDurationObserve verifies the histogram accepts observations.
-// Histograms are more complex than counters/gauges - they bucket values and
-// track sum/count for calculating percentiles.
-//
-// Testing Limitation:
-//
-//	testutil.ToFloat64 doesn't work with histograms (they have multiple
-//	internal metrics), so we use CollectAndCount to verify observations
-//	are at least being recorded.
-//
-// Real-World Usage:
-//
-//	This histogram tracks request latency. Broken histograms would prevent
-//	calculating p50, p95, p99 latency for SLA monitoring.
+// Histograms track the distribution of response times, enabling percentile
+// calculations (p50, p95, p99) for SLA monitoring. Broken histograms would
+// prevent latency analysis and performance detection.
 func TestRequestDurationObserve(t *testing.T) {
 	// Record some sample latencies (in seconds)
 	RequestDuration.Observe(0.1) // 100ms - fast
@@ -203,7 +155,6 @@ func TestRequestDurationObserve(t *testing.T) {
 	RequestDuration.Observe(1.0) // 1s - slow
 
 	// Verify histogram is collecting observations
-	// (We can't check specific buckets, but we can verify it's working)
 	count := testutil.CollectAndCount(RequestDuration)
 	if count == 0 {
 		t.Error("Histogram reported 0 metrics collected")

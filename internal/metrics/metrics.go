@@ -1,48 +1,27 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Prometheus Metrics
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //
-// This package defines and registers Prometheus metrics for monitoring the
-// health check service. Metrics are exposed at the /metrics endpoint and can
-// be scraped by Prometheus servers for monitoring, alerting, and dashboards.
+// Package metrics provides Prometheus metrics for the health check service.
+// All metrics are centrally defined and registered during package init to
+// ensure single registration and prevent conflicts. Components throughout
+// the application import this package to record observations.
 //
-// Metrics Philosophy:
-//   - RequestsTotal: Track request volume and error rates
-//   - ServiceStatus: Monitor actual service health (the core business metric)
-//   - RequestDuration: Identify performance issues and latency spikes
-//
-// These three metrics enable:
-//   - Alerting on service downtime (ServiceStatus)
-//   - Detecting health checker problems (RequestsTotal 500s)
-//   - Monitoring health check performance (RequestDuration)
-//   - Capacity planning (request volume trends)
-//
-// Metric Types:
-//   Counter   - Monotonically increasing value (requests, errors)
-//   Gauge     - Value that can go up or down (current status)
-//   Histogram - Distribution of values (latency, duration)
-//
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-// Package metrics
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+)
 
-// -----------------------------------------------------------------------------
-// Metric Definitions
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Request and Service Health Metrics
+// -----------------------------------------------------------------------
 
-// Prometheus metrics exported by this service.
-// All metrics are registered in init() to be available at /metrics endpoint.
 var (
 	// RequestsTotal counts all health check requests by status code.
-	// Labels: status_code (200, 503, 500)
-	//
-	// Use Case: Monitor request volume and error rates
-	// Example Queries:
-	//   - rate(health_check_requests_total[5m])  # Request rate
-	//   - sum(health_check_requests_total{status_code="500"})  # Error count
+	// Enables tracking of request volume, error rates, and success rates.
 	RequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_check_requests_total",
@@ -51,13 +30,13 @@ var (
 		[]string{"status_code"},
 	)
 
-	// ServiceStatus tracks the current health of the monitored service.
-	// Labels: service (service name), state (systemd ActiveState)
-	// Values: 1 = active/healthy, 0 = any other state
+	// ServiceStatus tracks the current health of the monitored systemd service.
+	// Set to 1 when active, 0 for any other state. Primary metric for service
+	// availability alerting and SLA calculations.
 	//
-	// Use Case: Primary alerting metric for service health
-	// Example Alert:
-	//   - monitored_service_status{service="nginx"} == 0
+	// Labels:
+	//   - service: Name of the monitored systemd service (e.g., nginx, postgresql)
+	//   - state: The current systemd ActiveState (active, inactive, failed, etc.)
 	ServiceStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "monitored_service_status",
@@ -66,13 +45,9 @@ var (
 		[]string{"service", "state"},
 	)
 
-	// RequestDuration measures how long each health check request takes.
-	// Uses default Prometheus buckets for general-purpose latency tracking.
-	//
-	// Use Case: Identify slow health checks and performance degradation
-	// Example Queries:
-	//   - histogram_quantile(0.99, health_check_request_duration_seconds)  # p99 latency
-	//   - rate(health_check_request_duration_seconds_sum[5m])  # Total time spent
+	// RequestDuration measures the latency of health check requests using a
+	// histogram with Prometheus default buckets. Enables percentile calculations
+	// (p50, p95, p99) for SLA monitoring and detects performance degradation.
 	RequestDuration = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Name:    "health_check_request_duration_seconds",
@@ -80,14 +55,20 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
+)
 
-	// CheckFailures counts failed health check attempts by error type.
-	// Labels: service (service name), error_type (dbus_error, type_error)
+// -----------------------------------------------------------------------
+// Checker Health and Failure Metrics
+// -----------------------------------------------------------------------
+
+var (
+	// CheckFailures counts failed health check attempts by error category.
+	// Distinguishes infrastructure failures (dbus_error) from code issues
+	// (type_error).
 	//
-	// Use Case: Distinguish infrastructure failures from code issues
-	// Example Queries:
-	//   - rate(health_check_failures_total[5m])  # Failure rate
-	//   - sum(health_check_failures_total{error_type="dbus_error"})  # D-Bus issues
+	// Labels:
+	//   - service: Name of the monitored systemd service
+	//   - error_type: Category of failure (dbus_error, type_error)
 	CheckFailures = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "health_check_failures_total",
@@ -95,23 +76,58 @@ var (
 		},
 		[]string{"service", "error_type"},
 	)
+
+	// CacheStaleness measures how old the cached health check data is in seconds.
+	// Provides visibility into whether the background checker is still running.
+	// Increases over time until checker updates cache; detects stuck goroutines
+	// and deadlocks.
+	//
+	// Labels:
+	//   - service: Name of the monitored systemd service
+	CacheStaleness = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "health_check_cache_staleness_seconds",
+			Help: "Age of cached health data in seconds (how long since last check)",
+		},
+		[]string{"service"},
+	)
+
+	// CheckerHealthy provides a simple boolean signal: is the checker responding?
+	// Set by the watchdog goroutine that monitors checker responsiveness.
+	// Set to 1 when checker has updated health information within the expected
+	// interval, 0 when stuck, deadlocked, or crashed.
+	CheckerHealthy = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "health_checker_healthy",
+			Help: "Whether the background checker goroutine is responding (1=yes, 0=stuck)",
+		},
+	)
+
+	// CheckerLastCheckTimestamp records the Unix timestamp of the most recent
+	// successful health check. Useful for manual investigation, calculating
+	// staleness, and detecting timing issues.
+	CheckerLastCheckTimestamp = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "health_checker_last_check_timestamp_seconds",
+			Help: "Unix timestamp of the last successful health check",
+		},
+	)
 )
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Metric Registration
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-// init automatically registers all metrics with Prometheus default registry.
-// This function runs before main(), ensuring metrics are available immediately
-// when the /metrics endpoint starts serving.
-//
-// Registration:
-//   - MustRegister panics if metrics can't be registered (fail fast)
-//   - This ensures we catch metric definition errors at startup
-//   - Better to crash at startup than serve broken metrics
+// init registers all metrics with the Prometheus default registry during
+// package initialization. MustRegister panics if a metric cannot be registered,
+// which ensures metric registration errors are caught at startup rather than
+// silently failing to export metrics.
 func init() {
 	prometheus.MustRegister(RequestsTotal)
 	prometheus.MustRegister(ServiceStatus)
 	prometheus.MustRegister(RequestDuration)
 	prometheus.MustRegister(CheckFailures)
+	prometheus.MustRegister(CacheStaleness)
+	prometheus.MustRegister(CheckerHealthy)
+	prometheus.MustRegister(CheckerLastCheckTimestamp)
 }

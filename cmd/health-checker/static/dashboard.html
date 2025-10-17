@@ -5,44 +5,173 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Health Check Dashboard</title>
 
-    <!-- Tailwind CSS for styling (like Bootstrap but better) -->
+    <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- React and ReactDOM from CDN (no npm needed!) -->
+    <!-- React and ReactDOM from CDN -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 
-    <!-- Babel to transform JSX in the browser (normally you'd compile this) -->
+    <!-- Babel to transform JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        @keyframes pulse-warning {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .pulse-warning {
+            animation: pulse-warning 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-healthy { background-color: #10b981; }
+        .status-warning { background-color: #f59e0b; }
+        .status-critical { background-color: #ef4444; }
+
+        .history-bar {
+            min-height: 2px;
+            transition: all 0.2s ease;
+        }
+
+        .history-bar:hover {
+            opacity: 1 !important;
+        }
+
+        .history-container {
+            display: flex;
+            align-items: flex-end;
+            gap: 3px;
+            height: 150px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 8px;
+        }
+
+        .history-bar-wrapper {
+            flex-shrink: 0;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            height: 100%;
+            min-width: 8px;
+        }
+
+        .history-bar-inner {
+            flex-grow: 1;
+            width: 100%;
+            border-radius: 2px 2px 0 0;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            opacity: 0.8;
+        }
+
+        .history-tooltip {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            margin-bottom: 8px;
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 10;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        }
+
+        .history-bar-wrapper:hover .history-bar-inner {
+            opacity: 1;
+        }
+
+        .history-bar-wrapper:hover .history-tooltip {
+            opacity: 1;
+        }
+    </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
-    <!-- This is where React will render our app -->
     <div id="root"></div>
 
-    <!-- Our React code goes in a script with type="text/babel" -->
     <script type="text/babel">
-        // Import hooks from React (useState = state management, useEffect = side effects)
         const { useState, useEffect } = React;
 
-        // Main Dashboard Component
-        // This is a function that returns JSX (HTML-like syntax)
-        function Dashboard() {
-            // STATE: Variables that cause re-renders when changed
-            // Think of it like: const [getter, setter] = useState(initialValue)
-            const [status, setStatus] = useState(null);  // Holds API response
-            const [loading, setLoading] = useState(true); // Is data loading?
-            const [error, setError] = useState(null);     // Any errors?
-            const [history, setHistory] = useState([]);   // Status history for chart
-            const [healthResponse, setHealthResponse] = useState(null); // Raw health endpoint response
-            const [metricsResponse, setMetricsResponse] = useState(null); // Raw metrics endpoint response
+        function getStatusColor(healthy, stale) {
+            if (stale) return 'bg-yellow-900 border-yellow-500';
+            if (healthy) return 'bg-green-900 border-green-500';
+            return 'bg-red-900 border-red-500';
+        }
 
-            // EFFECT: Fetch data when component mounts and every 2 seconds
-            // This is like a cron job inside your component
+        function getStatusText(status, stale) {
+            if (stale) return 'STALE DATA';
+            if (status === 'healthy') return 'HEALTHY';
+            if (status === 'unhealthy') return 'UNHEALTHY';
+            if (status === 'error') return 'ERROR';
+            return status.toUpperCase();
+        }
+
+        function getIndicatorColor(healthy, stale) {
+            if (stale) return 'status-warning';
+            if (healthy) return 'status-healthy';
+            return 'status-critical';
+        }
+
+        function formatStaleness(seconds) {
+            if (seconds < 60) return `${seconds}s ago`;
+            const minutes = Math.floor(seconds / 60);
+            return `${minutes}m ${seconds % 60}s ago`;
+        }
+
+        function Dashboard() {
+            const [status, setStatus] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [history, setHistory] = useState([]);
+            const [healthResponse, setHealthResponse] = useState(null);
+            const [metricsResponse, setMetricsResponse] = useState(null);
+            const [metricsRawData, setMetricsRawData] = useState('');
+            const [metricsFilters, setMetricsFilters] = useState({
+                healthChecker: true,
+                healthCheck: true,
+                monitoredService: true,
+                comments: true,
+            });
+            const [autoRefresh, setAutoRefresh] = useState(true);
+
+            // Derived state: are all filters enabled?
+            const allFiltersEnabled = Object.values(metricsFilters).every(v => v === true);
+            const anyFilterEnabled = Object.values(metricsFilters).some(v => v === true);
+
+            // Handle "All" checkbox
+            const handleToggleAll = (checked) => {
+                setMetricsFilters({
+                    healthChecker: checked,
+                    healthCheck: checked,
+                    monitoredService: checked,
+                    comments: checked,
+                });
+            };
+
+            // Handle individual filter changes
+            const handleFilterChange = (key, checked) => {
+                setMetricsFilters({...metricsFilters, [key]: checked});
+            };
+
             useEffect(() => {
-                // Function to fetch status from our Go API
                 const fetchStatus = async () => {
                     try {
-                        // Call our /api/status endpoint
                         const response = await fetch('/api/status');
 
                         if (!response.ok) {
@@ -50,17 +179,21 @@
                         }
 
                         const data = await response.json();
-
-                        // Update state (this triggers a re-render)
                         setStatus(data);
                         setLoading(false);
                         setError(null);
 
-                        // Add to history (keep last 20 checks)
-                        setHistory(prev => [...prev, {
-                            time: new Date(),
-                            healthy: data.healthy
-                        }].slice(-20));
+                        setHistory(prev => {
+                            const newEntry = {
+                                time: new Date(),
+                                healthy: data.healthy,
+                                stale: data.stale,
+                                staleness_s: data.staleness_s,
+                                status: data.status,
+                                statusCode: data.status_code,
+                            };
+                            return [...prev, newEntry].slice(-60);
+                        });
 
                     } catch (err) {
                         setError(err.message);
@@ -68,17 +201,14 @@
                     }
                 };
 
-                // Fetch immediately
                 fetchStatus();
 
-                // Then fetch every 2 seconds
+                if (!autoRefresh) return;
+
                 const interval = setInterval(fetchStatus, 2000);
-
-                // Cleanup function: runs when component unmounts
                 return () => clearInterval(interval);
-            }, []); // Empty dependency array = run once on mount
+            }, [autoRefresh]);
 
-            // Function to fetch and display raw health endpoint
             const showHealthResponse = async () => {
                 try {
                     const response = await fetch('/health');
@@ -86,9 +216,13 @@
                     setHealthResponse({
                         status: response.status,
                         statusText: response.statusText,
-                        body: data
+                        headers: {
+                            warning: response.headers.get('Warning'),
+                            cacheControl: response.headers.get('Cache-Control'),
+                        },
+                        body: data || '(empty body)'
                     });
-                    setMetricsResponse(null); // Hide metrics if showing
+                    setMetricsResponse(null);
                 } catch (err) {
                     setHealthResponse({
                         status: 'Error',
@@ -98,78 +232,149 @@
                 }
             };
 
-            // Function to fetch and display raw metrics endpoint
             const showMetricsResponse = async () => {
                 try {
                     const response = await fetch('/metrics');
-                    const data = await response.text();
+                    const rawData = await response.text();
+                    
+                    setMetricsRawData(rawData);
                     setMetricsResponse({
                         status: response.status,
                         statusText: response.statusText,
-                        body: data
                     });
-                    setHealthResponse(null); // Hide health if showing
+                    setHealthResponse(null);
                 } catch (err) {
                     setMetricsResponse({
                         status: 'Error',
                         statusText: 'Failed to fetch',
-                        body: err.message
                     });
+                    setMetricsRawData(err.message);
                 }
             };
 
-            // RENDER: Loading state
+            // Filter metrics whenever filters change
+            useEffect(() => {
+                if (!metricsResponse || !metricsRawData) return;
+
+                // Check if ANY filter is enabled
+                const hasAnyFilter = Object.values(metricsFilters).some(v => v === true);
+
+                // If no filters selected, show blank
+                if (!hasAnyFilter) {
+                    setMetricsResponse(prev => ({
+                        ...prev,
+                        body: ''
+                    }));
+                    return;
+                }
+
+                // Otherwise filter the data
+                const lines = metricsRawData.split('\n');
+                const relevant = lines.filter(line => {
+                    if (metricsFilters.comments && line.startsWith('# ')) return true;
+                    if (metricsFilters.healthChecker && line.includes('health_checker')) return true;
+                    if (metricsFilters.healthCheck && line.includes('health_check_')) return true;
+                    if (metricsFilters.monitoredService && line.includes('monitored_service')) return true;
+                    return false;
+                }).join('\n');
+
+                setMetricsResponse(prev => ({
+                    ...prev,
+                    body: relevant
+                }));
+            }, [metricsFilters, metricsRawData]);
+
+            // Auto-refresh metrics while modal is open
+            useEffect(() => {
+                if (!metricsResponse) return;
+
+                const interval = setInterval(showMetricsResponse, 2000);
+                return () => clearInterval(interval);
+            }, [metricsResponse]);
+
             if (loading) {
                 return (
                     <div className="flex items-center justify-center min-h-screen">
-                        <div className="text-2xl">Loading...</div>
-                    </div>
-                );
-            }
-
-            // RENDER: Error state
-            if (error) {
-                return (
-                    <div className="flex items-center justify-center min-h-screen">
-                        <div className="bg-red-900 border border-red-700 rounded-lg p-8">
-                            <h2 className="text-2xl font-bold mb-2">Connection Error</h2>
-                            <p className="text-red-200">{error}</p>
+                        <div className="text-center">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                            <div className="text-2xl">Loading...</div>
                         </div>
                     </div>
                 );
             }
 
-            // RENDER: Main dashboard (when we have data)
+            if (error) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen">
+                        <div className="bg-red-900 border border-red-700 rounded-lg p-8 max-w-md">
+                            <h2 className="text-2xl font-bold mb-2">Connection Error</h2>
+                            <p className="text-red-200 mb-4">{error}</p>
+                            <button
+                                onClick={() => window.location.reload()}
+                                className="bg-red-700 hover:bg-red-800 px-4 py-2 rounded"
+                            >
+                                Retry
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            const statusColor = getStatusColor(status.healthy, status.stale);
+            const statusText = getStatusText(status.status, status.stale);
+            const indicatorColor = getIndicatorColor(status.healthy, status.stale);
+
+            const getBarHeight = (item) => {
+                if (item.stale) return 40;
+                if (item.healthy) return 100;
+                return 20;
+            };
+
             return (
                 <div className="container mx-auto px-4 py-8">
                     {/* Header */}
-                    <div className="mb-8">
-                        <h1 className="text-4xl font-bold mb-2">Health Check Dashboard</h1>
-                        <p className="text-gray-400">Real-time service monitoring</p>
+                    <div className="mb-8 flex justify-between items-center">
+                        <div>
+                            <h1 className="text-4xl font-bold mb-2">Health Check Dashboard</h1>
+                            <p className="text-gray-400">Real-time service monitoring</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setAutoRefresh(!autoRefresh)}
+                                className={`px-4 py-2 rounded ${
+                                    autoRefresh
+                                        ? 'bg-blue-600 hover:bg-blue-700'
+                                        : 'bg-gray-700 hover:bg-gray-600'
+                                }`}
+                            >
+                                {autoRefresh ? '⏸ Pause' : '▶ Resume'}
+                            </button>
+                        </div>
                     </div>
 
                     {/* Main Status Card */}
-                    <div className={`rounded-lg p-8 mb-6 ${
-                        status.healthy
-                            ? 'bg-green-900 border-2 border-green-500'
-                            : 'bg-red-900 border-2 border-red-500'
-                    }`}>
-                        <div className="flex items-center justify-between">
+                    <div className={`rounded-lg p-8 mb-6 border-2 ${statusColor}`}>
+                        <div className="flex items-start justify-between mb-6">
                             <div>
-                                <h2 className="text-2xl font-bold mb-2">
+                                <h2 className="text-2xl font-bold mb-4">
                                     Service: {status.service}
                                 </h2>
                                 <div className="flex items-center gap-4">
                                     <span className={`text-6xl ${
+                                        status.stale ? 'text-yellow-400' :
                                         status.healthy ? 'text-green-400' : 'text-red-400'
                                     }`}>
-                                        {status.healthy ? '✓' : '✗'}
+                                        {status.stale ? '⚠️' :
+                                         status.healthy ? '✓' : '✗'}
                                     </span>
                                     <div>
-                                        <p className="text-3xl font-bold">
-                                            {status.status.toUpperCase()}
+                                        <p className={`text-3xl font-bold ${
+                                            status.stale ? 'text-yellow-400' :
+                                            status.healthy ? 'text-green-400' : 'text-red-400'
+                                        }`}>
+                                            {statusText}
                                         </p>
-                                        <p className="text-xl text-gray-300">
+                                        <p className="text-xl text-gray-300 mt-1">
                                             State: {status.state}
                                         </p>
                                     </div>
@@ -177,70 +382,164 @@
                             </div>
                             <div className="text-right">
                                 <p className="text-sm text-gray-400">Status Code</p>
-                                <p className="text-4xl font-bold">{status.status_code}</p>
+                                <p className="text-5xl font-bold">{status.status_code}</p>
+                            </div>
+                        </div>
+
+                        {status.stale && (
+                            <div className={`mt-4 p-4 bg-yellow-800 border border-yellow-600 rounded ${
+                                status.staleness_s > 60 ? 'pulse-warning' : ''
+                            }`}>
+                                <p className="font-bold">
+                                    ⚠️ Stale Data Warning
+                                </p>
+                                <p className="text-sm mt-1">
+                                    Last updated {formatStaleness(status.staleness_s)} 
+                                    ({status.staleness_s} seconds ago)
+                                </p>
+                                <p className="text-xs text-gray-300 mt-2">
+                                    The health checker may not be responding. Check metrics for checker health.
+                                </p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Stats Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-2">Last Checked</p>
+                            <p className="text-2xl font-bold">
+                                {new Date(status.last_checked).toLocaleTimeString()}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">
+                                {formatStaleness(status.staleness_s)}
+                            </p>
+                        </div>
+
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-2">Data Age</p>
+                            <p className={`text-2xl font-bold ${
+                                status.staleness_s > 60 ? 'text-red-400' :
+                                status.staleness_s > 30 ? 'text-yellow-400' :
+                                'text-green-400'
+                            }`}>
+                                {status.staleness_s}s
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">
+                                {status.stale ? '(stale)' : '(fresh)'}
+                            </p>
+                        </div>
+
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-2">Service Status</p>
+                            <div className="flex items-center">
+                                <span className={`status-indicator ${indicatorColor}`}></span>
+                                <p className="text-2xl font-bold">
+                                    {status.state}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <p className="text-gray-400 text-sm mb-2">Status</p>
+                            <p className={`text-2xl font-bold ${
+                                status.healthy ? 'text-green-400' : 'text-red-400'
+                            }`}>
+                                {status.healthy ? 'Active' : 'Down'}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">
+                                HTTP {status.status_code}
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Status History Chart */}
+                    <div className="bg-gray-800 rounded-lg p-6 mb-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold">Check History (Last {Math.min(history.length, 60)} checks)</h3>
+                            <span className="text-xs text-gray-400">
+                                {history.length === 0 ? 'Waiting for data...' : `${(history.length * 2)}s coverage`}
+                            </span>
+                        </div>
+
+                        {history.length === 0 ? (
+                            <div className="flex items-center justify-center h-40 bg-gray-900 rounded border border-gray-700">
+                                <p className="text-gray-400">
+                                    📊 Collecting data... (checks every 2 seconds)
+                                </p>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="history-container">
+                                    {history.map((item, index) => (
+                                        <div
+                                            key={index}
+                                            className="history-bar-wrapper group"
+                                            title={`${item.time.toLocaleTimeString()}: ${item.status} (${item.staleness_s}s old)`}
+                                        >
+                                            <div
+                                                className={`history-bar-inner ${
+                                                    item.stale ? 'bg-yellow-500' :
+                                                    item.healthy ? 'bg-green-500' : 'bg-red-500'
+                                                }`}
+                                                style={{ 
+                                                    height: `${getBarHeight(item)}%`,
+                                                    minHeight: '2px'
+                                                }}
+                                            />
+                                            <div className="history-tooltip">
+                                                {item.time.toLocaleTimeString()}<br />
+                                                {item.status} ({item.statusCode})
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="flex justify-between mt-4 text-xs text-gray-400">
+                                    <span>{history.length > 0 ? new Date(history[0].time).toLocaleTimeString() : 'N/A'}</span>
+                                    <span>{history.length > 0 ? new Date(history[history.length - 1].time).toLocaleTimeString() : 'N/A'}</span>
+                                </div>
+                            </>
+                        )}
+
+                        <div className="bg-gray-900 rounded p-4 mt-4">
+                            <p className="text-sm font-bold mb-2">Legend</p>
+                            <div className="flex gap-6 text-sm flex-wrap">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-12 bg-green-500 rounded-sm"></div>
+                                    <span>Healthy (100%)</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-4 bg-red-500 rounded-sm"></div>
+                                    <span>Unhealthy (20%)</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-7 bg-yellow-500 rounded-sm"></div>
+                                    <span>Stale (40%)</span>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    {/* Stats Grid */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                        {/* Last Checked */}
-                        <div className="bg-gray-800 rounded-lg p-6">
-                            <p className="text-gray-400 text-sm mb-1">Last Checked</p>
-                            <p className="text-2xl font-bold">
-                                {new Date(status.last_checked).toLocaleTimeString()}
-                            </p>
-                        </div>
-
-                        {/* Uptime */}
-                        <div className="bg-gray-800 rounded-lg p-6">
-                            <p className="text-gray-400 text-sm mb-1">Uptime</p>
-                            <p className="text-2xl font-bold text-green-400">
-                                {status.uptime}%
-                            </p>
-                        </div>
-
-                        {/* Checks */}
-                        <div className="bg-gray-800 rounded-lg p-6">
-                            <p className="text-gray-400 text-sm mb-1">Recent Checks</p>
-                            <p className="text-2xl font-bold">{history.length}</p>
-                        </div>
-                    </div>
-
-                    {/* Status History Chart (simple bar chart) */}
-                    <div className="bg-gray-800 rounded-lg p-6">
-                        <h3 className="text-xl font-bold mb-4">Status History</h3>
-                        <div className="flex items-end gap-1 h-32">
-                            {history.map((item, index) => (
-                                <div
-                                    key={index}
-                                    className={`flex-1 rounded-t transition-all ${
-                                        item.healthy ? 'bg-green-500' : 'bg-red-500'
-                                    }`}
-                                    style={{ height: item.healthy ? '100%' : '20%' }}
-                                    title={item.time.toLocaleTimeString()}
-                                />
-                            ))}
-                        </div>
-                        <div className="flex justify-between mt-2 text-xs text-gray-400">
-                            <span>Oldest</span>
-                            <span>Most Recent</span>
-                        </div>
-                    </div>
-
-                    {/* Buttons */}
-                    <div className="mt-8 flex gap-4">
+                    {/* Action Buttons */}
+                    <div className="mt-8 flex gap-4 flex-wrap">
                         <button
                             onClick={showHealthResponse}
                             className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg font-semibold transition"
                         >
-                            View Health Endpoint
+                            📊 View Health Endpoint
                         </button>
                         <button
                             onClick={showMetricsResponse}
                             className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg font-semibold transition"
                         >
-                            View Prometheus Metrics
+                            📈 View Metrics
+                        </button>
+                        <button
+                            onClick={() => window.location.reload()}
+                            className="bg-gray-700 hover:bg-gray-600 px-6 py-3 rounded-lg font-semibold transition"
+                        >
+                            🔄 Refresh
                         </button>
                     </div>
 
@@ -253,10 +552,10 @@
                                     onClick={() => setHealthResponse(null)}
                                     className="text-gray-400 hover:text-white text-2xl"
                                 >
-                                    ×
+                                    ✕
                                 </button>
                             </div>
-                            <div className="mb-2">
+                            <div className="mb-4">
                                 <span className={`inline-block px-3 py-1 rounded text-sm font-semibold ${
                                     healthResponse.status >= 200 && healthResponse.status < 300
                                         ? 'bg-green-600'
@@ -267,6 +566,12 @@
                                     HTTP {healthResponse.status} {healthResponse.statusText}
                                 </span>
                             </div>
+                            {healthResponse.headers?.warning && (
+                                <div className="mb-4 p-3 bg-yellow-900 border border-yellow-700 rounded text-sm">
+                                    <p className="font-bold">⚠️ Warning Header</p>
+                                    <p className="text-yellow-200">{healthResponse.headers.warning}</p>
+                                </div>
+                            )}
                             <pre className="bg-gray-900 p-4 rounded overflow-x-auto text-sm text-gray-300">
 {healthResponse.body}
                             </pre>
@@ -277,24 +582,86 @@
                     {metricsResponse && (
                         <div className="mt-6 bg-gray-800 rounded-lg p-6">
                             <div className="flex items-center justify-between mb-4">
-                                <h3 className="text-xl font-bold">Prometheus Metrics Response</h3>
+                                <h3 className="text-xl font-bold">Prometheus Metrics</h3>
                                 <button
                                     onClick={() => setMetricsResponse(null)}
                                     className="text-gray-400 hover:text-white text-2xl"
                                 >
-                                    ×
+                                    ✕
                                 </button>
                             </div>
-                            <div className="mb-2">
+                            <div className="mb-4">
                                 <span className={`inline-block px-3 py-1 rounded text-sm font-semibold ${
                                     metricsResponse.status >= 200 && metricsResponse.status < 300
                                         ? 'bg-green-600'
                                         : 'bg-red-600'
                                 }`}>
-                                    HTTP {metricsResponse.status} {metricsResponse.statusText}
+                                    HTTP {metricsResponse.status}
                                 </span>
                             </div>
-                            <pre className="bg-gray-900 p-4 rounded overflow-x-auto text-sm text-gray-300">
+
+                            {/* Metric Type Filters */}
+                            <div className="mb-4 p-4 bg-gray-900 rounded border border-gray-700">
+                                <p className="text-sm font-semibold mb-3 text-gray-300">Metric Types:</p>
+                                
+                                {/* All Checkbox */}
+                                <div className="mb-3 pb-3 border-b border-gray-700">
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={allFiltersEnabled}
+                                            onChange={(e) => handleToggleAll(e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm font-semibold">All Metrics</span>
+                                    </label>
+                                </div>
+
+                                {/* Individual Checkboxes */}
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.healthChecker}
+                                            onChange={(e) => handleFilterChange('healthChecker', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Checker Health</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.healthCheck}
+                                            onChange={(e) => handleFilterChange('healthCheck', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Health Checks</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.monitoredService}
+                                            onChange={(e) => handleFilterChange('monitoredService', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Service Status</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer hover:text-blue-400">
+                                        <input
+                                            type="checkbox"
+                                            checked={metricsFilters.comments}
+                                            onChange={(e) => handleFilterChange('comments', e.target.checked)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm">Help Text</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <p className="text-xs text-gray-400 mb-2">
+                                {Object.values(metricsFilters).filter(Boolean).length} of 4 categories selected
+                            </p>
+                            <pre className="bg-gray-900 p-4 rounded overflow-x-auto text-sm text-gray-300 max-h-96">
 {metricsResponse.body}
                             </pre>
                         </div>
@@ -303,8 +670,6 @@
             );
         }
 
-        // Render the Dashboard component into the #root div
-        // This is like "start the React app"
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<Dashboard />);
     </script>

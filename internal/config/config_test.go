@@ -1,22 +1,12 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Configuration Management - Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //
-// This test suite validates configuration loading from multiple sources with
-// proper precedence and validation. Since config errors prevent startup,
-// these tests are critical for catching issues early.
+// Package config_test validates configuration loading from multiple sources
+// with proper precedence and validation. Configuration errors prevent startup,
+// making these tests critical for catching issues early.
 //
-// Test Coverage:
-//   - Default values
-//   - Validation rules (port range, required fields, intervals)
-//   - TLS configuration validation
-//   - Autocert configuration validation
-//   - Conflicting TLS settings
-//
-// Note: Testing flags and environment variables requires careful setup to
-// avoid affecting other tests. We focus on validation logic here.
-//
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 package config
 
@@ -24,9 +14,9 @@ import (
 	"testing"
 )
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Validation Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestValidatePortRange verifies port validation catches invalid values.
 // Ports must be in the valid TCP range 1-65535.
@@ -50,8 +40,8 @@ func TestValidatePortRange(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Config{
 				Port:     tt.port,
-				Service:  "nginx", // Required field
-				Interval: 10,      // Required field
+				Service:  "nginx",
+				Interval: 10,
 			}
 
 			err := cfg.Validate()
@@ -68,11 +58,10 @@ func TestValidatePortRange(t *testing.T) {
 }
 
 // TestValidateServiceRequired verifies that service name is mandatory.
-// The service cannot monitor nothing.
 func TestValidateServiceRequired(t *testing.T) {
 	cfg := &Config{
 		Port:     8080,
-		Service:  "", // Missing required field
+		Service:  "",
 		Interval: 10,
 	}
 
@@ -84,7 +73,6 @@ func TestValidateServiceRequired(t *testing.T) {
 }
 
 // TestValidateIntervalMinimum verifies interval must be at least 1 second.
-// This prevents excessive polling of systemd.
 func TestValidateIntervalMinimum(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -120,9 +108,9 @@ func TestValidateIntervalMinimum(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // TLS Configuration Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestValidateTLSRequiresCertAndKey verifies that manual TLS requires both
 // certificate and key files to be specified.
@@ -136,8 +124,6 @@ func TestValidateTLSRequiresCertAndKey(t *testing.T) {
 		{"missing both", "", "", true},
 		{"missing cert", "", "key.pem", true},
 		{"missing key", "cert.pem", "", true},
-		// Note: We can't test with real files without creating them
-		// Just verify the validation logic checks for non-empty strings
 	}
 
 	for _, tt := range tests {
@@ -161,14 +147,13 @@ func TestValidateTLSRequiresCertAndKey(t *testing.T) {
 }
 
 // TestValidateAutocertRequiresDomain verifies that autocert requires a domain.
-// Let's Encrypt needs to know which domain to issue certificates for.
 func TestValidateAutocertRequiresDomain(t *testing.T) {
 	cfg := &Config{
 		Port:              443,
 		Service:           "nginx",
 		Interval:          10,
 		TLSAutocert:       true,
-		TLSAutocertDomain: "", // Missing required field
+		TLSAutocertDomain: "",
 	}
 
 	err := cfg.Validate()
@@ -178,11 +163,11 @@ func TestValidateAutocertRequiresDomain(t *testing.T) {
 	}
 }
 
-// TestValidateAutocertWarnsAboutPort verifies that autocert with non-443 port
-// logs a warning but doesn't fail. This allows reverse proxy scenarios.
+// TestValidateAutocertWarnsAboutPort verifies that autocert with non-443
+// port logs a warning but does not fail.
 func TestValidateAutocertWarnsAboutPort(t *testing.T) {
 	cfg := &Config{
-		Port:              8443, // Not 443
+		Port:              8443,
 		Service:           "nginx",
 		Interval:          10,
 		TLSAutocert:       true,
@@ -197,16 +182,16 @@ func TestValidateAutocertWarnsAboutPort(t *testing.T) {
 }
 
 // TestValidateCannotUseBothTLSAndAutocert verifies that manual TLS and
-// autocert are mutually exclusive. You can't use both at once.
+// autocert are mutually exclusive.
 func TestValidateCannotUseBothTLSAndAutocert(t *testing.T) {
 	cfg := &Config{
 		Port:              443,
 		Service:           "nginx",
 		Interval:          10,
-		TLSEnabled:        true, // Manual TLS
+		TLSEnabled:        true,
 		TLSCertFile:       "cert.pem",
 		TLSKeyFile:        "key.pem",
-		TLSAutocert:       true, // Also autocert - conflict!
+		TLSAutocert:       true,
 		TLSAutocertDomain: "example.com",
 	}
 
@@ -217,12 +202,11 @@ func TestValidateCannotUseBothTLSAndAutocert(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Valid Configuration Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestValidateHTTPOnly verifies a basic HTTP-only config is valid.
-// This is the most common use case.
 func TestValidateHTTPOnly(t *testing.T) {
 	cfg := &Config{
 		Port:     8080,
@@ -238,13 +222,15 @@ func TestValidateHTTPOnly(t *testing.T) {
 
 // TestValidateWithAutocert verifies a valid autocert config passes validation.
 func TestValidateWithAutocert(t *testing.T) {
+	tmpDir := t.TempDir() // Use temp directory for testing
+
 	cfg := &Config{
 		Port:              443,
 		Service:           "nginx",
 		Interval:          10,
 		TLSAutocert:       true,
 		TLSAutocertDomain: "example.com",
-		TLSAutocertCache:  "/var/cache/health-checker",
+		TLSAutocertCache:  tmpDir,
 		TLSAutocertEmail:  "admin@example.com",
 	}
 
@@ -254,17 +240,16 @@ func TestValidateWithAutocert(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Edge Cases
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestValidateMinimumInterval verifies that interval of 1 second is allowed.
-// This is the minimum to prevent excessive systemd polling.
 func TestValidateMinimumInterval(t *testing.T) {
 	cfg := &Config{
 		Port:     8080,
 		Service:  "nginx",
-		Interval: 1, // Minimum allowed
+		Interval: 1,
 	}
 
 	err := cfg.Validate()
@@ -274,10 +259,9 @@ func TestValidateMinimumInterval(t *testing.T) {
 }
 
 // TestValidateMaximumPort verifies port 65535 is accepted.
-// This is the maximum valid TCP port.
 func TestValidateMaximumPort(t *testing.T) {
 	cfg := &Config{
-		Port:     65535, // Maximum valid port
+		Port:     65535,
 		Service:  "nginx",
 		Interval: 10,
 	}

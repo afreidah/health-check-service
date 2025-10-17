@@ -1,65 +1,51 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // HTTP Handlers - Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //
-// This test suite validates the health check endpoint handler behavior under
-// various conditions. Since this endpoint is the primary interface for
-// monitoring systems, correct behavior is critical for production reliability.
+// Package handlers_test validates health check endpoint handler behavior
+// under various conditions. This endpoint is the primary interface for
+// monitoring systems, making correct behavior critical for production
+// reliability.
 //
-// Test Strategy:
-//   - Use httptest for isolated handler testing (no real HTTP server needed)
-//   - Test all possible HTTP status codes (200, 503, 500)
-//   - Verify thread-safety under concurrent load
-//   - Ensure handler works with any HTTP method
+// Run with race detector: go test -race ./internal/handlers
 //
-// Why These Tests Matter:
-//   Incorrect status codes would cause monitoring systems to:
-//     - Miss actual outages (false negatives)
-//     - Trigger false alerts (false positives)
-//     - Make incorrect routing/load balancing decisions
-//
-// Run with race detector: go test -race
-//
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 package handlers
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/afreidah/health-check-service/internal/cache"
 )
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Basic Status Code Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestHealthHandlerReturnsOK verifies handler returns 200 when service is
-// healthy (active). This is the success case that monitoring systems look for.
+// healthy (active).
 func TestHealthHandlerReturnsOK(t *testing.T) {
-	// Simulate background checker updating cache with healthy status
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
 
-	// Create mock HTTP request
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 
-	// Call handler
 	HealthHandler(w, req, c)
 
-	// Verify correct status code returned
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
 }
 
 // TestHealthHandlerReturnsServiceUnavailable verifies handler returns 503
-// when the service is down. This tells monitoring systems the service is
-// unhealthy and should be taken out of rotation.
+// when the service is down. This tells monitoring systems the service
+// should be taken out of rotation.
 func TestHealthHandlerReturnsServiceUnavailable(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusServiceUnavailable, "inactive")
@@ -75,7 +61,7 @@ func TestHealthHandlerReturnsServiceUnavailable(t *testing.T) {
 }
 
 // TestHealthHandlerReturnsInternalServerError verifies handler returns 500
-// when there's an error checking the service. This indicates a problem with
+// when there is an error checking the service. This indicates a problem with
 // the health checker itself, not the monitored service.
 func TestHealthHandlerReturnsInternalServerError(t *testing.T) {
 	c := cache.New()
@@ -91,13 +77,12 @@ func TestHealthHandlerReturnsInternalServerError(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Table-Driven Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-// TestHealthHandlerMultipleStatusCodes uses table-driven testing to verify
-// all possible status codes and service states in a single test. This ensures
-// comprehensive coverage of the status mapping.
+// TestHealthHandlerMultipleStatusCodes verifies all possible status codes
+// and service states using table-driven testing.
 func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -114,17 +99,14 @@ func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Setup cache with test state
 			c := cache.New()
 			c.UpdateStatus(tt.cacheStatus, tt.cacheState)
 
 			req := httptest.NewRequest("GET", "/health", nil)
 			w := httptest.NewRecorder()
 
-			// Execute handler
 			HealthHandler(w, req, c)
 
-			// Assert expected status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
@@ -132,15 +114,15 @@ func TestHealthHandlerMultipleStatusCodes(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // HTTP Method Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-// TestHealthHandlerWithDifferentHTTPMethods verifies the handler works with
-// any HTTP method. While GET is standard for health checks, some monitoring
-// systems or load balancers may use HEAD or OPTIONS.
+// TestHealthHandlerWithDifferentHTTPMethods verifies the handler accepts
+// GET and HEAD requests. These are the appropriate methods for health check
+// endpoints per RFC 7231.
 func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
-	methods := []string{"GET", "POST", "HEAD", "OPTIONS"}
+	methods := []string{"GET", "HEAD"} // Only these are allowed
 
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
@@ -152,7 +134,6 @@ func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 
 			HealthHandler(w, req, c)
 
-			// Handler doesn't check method, so all should return 200
 			if w.Code != http.StatusOK {
 				t.Errorf("Method %s: expected status %d, got %d", method, http.StatusOK, w.Code)
 			}
@@ -160,23 +141,47 @@ func TestHealthHandlerWithDifferentHTTPMethods(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// TestHealthHandlerRejectsUnsupportedMethods verifies POST, OPTIONS, etc.
+// are correctly rejected with 405 Method Not Allowed.
+func TestHealthHandlerRejectsUnsupportedMethods(t *testing.T) {
+	unsupportedMethods := []string{"POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+
+	c := cache.New()
+	c.UpdateStatus(http.StatusOK, "active")
+
+	for _, method := range unsupportedMethods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/health", nil)
+			w := httptest.NewRecorder()
+
+			HealthHandler(w, req, c)
+
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("Method %s: expected status %d, got %d",
+					method, http.StatusMethodNotAllowed, w.Code)
+			}
+
+			// Verify Allow header is set
+			if w.Header().Get("Allow") == "" {
+				t.Errorf("Method %s: Allow header should be set", method)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
 // Concurrency Tests
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 // TestHealthHandlerConcurrentRequests verifies the handler is thread-safe
 // under high concurrent load. In production, many HTTP requests may hit the
 // health endpoint simultaneously.
 //
-// This test simulates 100 concurrent requests, which would expose race
-// conditions if the cache isn't properly protected by mutexes.
-//
-// Run with: go test -race to detect data races
+// Run with: go test -race ./internal/handlers
 func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
 
-	// Channel for synchronization
 	done := make(chan bool, 100)
 
 	// Fire off 100 concurrent HTTP requests
@@ -201,8 +206,13 @@ func TestHealthHandlerConcurrentRequests(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
+// Stale Data Tests
+// -----------------------------------------------------------------------
+
 // TestHealthHandlerStaleDataWarning verifies that the handler adds a Warning
-// header when the cached data is stale.
+// header when the cached data is stale. The header includes the age of the
+// data for operational visibility.
 func TestHealthHandlerStaleDataWarning(t *testing.T) {
 	c := cache.New()
 	c.UpdateStatus(http.StatusOK, "active")
@@ -220,9 +230,15 @@ func TestHealthHandlerStaleDataWarning(t *testing.T) {
 		t.Error("Expected Warning header for stale data, got none")
 	}
 
-	expectedWarning := "199 - Stale health check data"
-	if warning != expectedWarning {
-		t.Errorf("Expected Warning header '%s', got '%s'", expectedWarning, warning)
+	// Check that warning contains the expected parts
+	expectedPrefix := "199 - Stale health check data"
+	if !strings.HasPrefix(warning, expectedPrefix) {
+		t.Errorf("Expected Warning header to start with '%s', got '%s'", expectedPrefix, warning)
+	}
+
+	// Verify it includes age information
+	if !strings.Contains(warning, "age:") {
+		t.Errorf("Expected Warning header to include age, got '%s'", warning)
 	}
 
 	if w.Code != http.StatusOK {

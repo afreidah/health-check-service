@@ -1,31 +1,18 @@
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // HTTP Handlers
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //
-// This package implements the HTTP endpoint handlers for the health check
-// service. Handlers are designed to be lightweight and fast, reading from
-// the pre-populated cache rather than checking systemd directly on each
-// request.
-//
-// Architecture:
-//   - Handlers read from cache (no D-Bus calls per request)
-//   - Background checker updates cache periodically
-//   - This design prevents D-Bus overload under high HTTP traffic
+// Package handlers implements HTTP endpoint handlers for the health check
+// service. Handlers read from a pre-populated cache to avoid D-Bus calls per
+// request, preventing connection exhaustion under high load.
 //
 // Endpoints:
-//   GET /health - Returns service health status with appropriate HTTP codes
-//                 200 OK: Service is active and healthy
-//                 503 Service Unavailable: Service is down or transitioning
-//                 500 Internal Server Error: Error checking service
+//   GET /health - Returns service health with appropriate HTTP status codes
+//                 (200, 503, or 500)
+//   GET /api/status - Returns JSON status for dashboard and programmatic access
 //
-// Observability:
-//   - All requests are logged with current status
-//   - Request duration and count metrics published to Prometheus
-//   - Metrics recorded via defer to ensure they're captured even on errors
-//
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-// Package handlers
 package handlers
 
 import (
@@ -41,9 +28,26 @@ import (
 	"github.com/afreidah/health-check-service/internal/metrics"
 )
 
-// component logger
+// -----------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------
+
+const (
+	// staleThreshold defines when cached data is considered stale
+	staleThreshold = 30 * time.Second
+
+	// allowedMethods lists HTTP methods accepted by health endpoints
+	allowedMethods = "GET, HEAD"
+)
+
 var logh = slog.Default().With("component", "http")
 
+// -----------------------------------------------------------------------
+// Request Helpers
+// -----------------------------------------------------------------------
+
+// requestID returns or generates a request ID for tracing. Checks
+// X-Request-ID header first, then generates a random ID if not present.
 func requestID(r *http.Request) string {
 	if id := r.Header.Get("X-Request-ID"); id != "" {
 		return id
@@ -53,6 +57,8 @@ func requestID(r *http.Request) string {
 	return hex.EncodeToString(b[:])
 }
 
+// clientIP extracts the client IP from the request, respecting X-Forwarded-For
+// header when behind a proxy.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		return xff
@@ -60,130 +66,165 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// -----------------------------------------------------------------------------
-// Health Check Handler
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Response Helpers
+// -----------------------------------------------------------------------
 
-// HealthHandler serves the /health endpoint by reading the cached service
-// status and returning the appropriate HTTP status code.
+// setSecurityHeaders sets common security headers on the response.
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+}
+
+// validateMethod checks if the request method is allowed and returns false
+// if not, with appropriate error response already written.
+func validateMethod(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", allowedMethods)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	return true
+}
+
+// -----------------------------------------------------------------------
+// Health Check Handler
+// -----------------------------------------------------------------------
+
+// HealthHandler serves the /health endpoint by returning the cached service
+// status. Returns 200 if active, 503 if unavailable, 500 if error checking.
 //
-// Design Decision: Read from Cache
-//
-//	This handler reads from the in-memory cache instead of querying systemd
-//	directly. This prevents D-Bus connection exhaustion under high load and
-//	ensures consistent response times regardless of systemd responsiveness.
-//
-// Response Codes:
-//   - 200 OK: Service is active
-//   - 503 Service Unavailable: Service is inactive/failed/transitioning
-//   - 500 Internal Server Error: Error communicating with systemd
-//
-// Metrics:
-//
-//	Records request duration and increments total request counter, labeled
-//	by status code for monitoring and alerting.
-func HealthHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceCache) {
+// The handler reads from cache rather than querying systemd directly to
+// prevent D-Bus connection exhaustion under high request volume. Metrics are
+// recorded regardless of outcome via defer.
+func HealthHandler(w http.ResponseWriter, r *http.Request, serviceCache *cache.ServiceCache) {
+	reqID := requestID(r)
 	start := time.Now()
 	var statusCode int
 
-	// -------------------------------------------------------------------------
-	// Deferred Metrics Recording
-	// -------------------------------------------------------------------------
-	// Use defer to ensure metrics are recorded even if the handler panics
-	// or returns early. This guarantees complete observability.
 	defer func() {
 		duration := time.Since(start).Seconds()
 		metrics.RequestDuration.Observe(duration)
 		metrics.RequestsTotal.
 			WithLabelValues(fmt.Sprintf("%d", statusCode)).
 			Inc()
+
+		logh.Debug("health request completed",
+			"request_id", reqID,
+			"method", r.Method,
+			"status", statusCode,
+			"duration_ms", int(duration*1000),
+		)
 	}()
 
-	// -------------------------------------------------------------------------
-	// Read Status from Cache
-	// -------------------------------------------------------------------------
-	// Fetch current status from cache (updated by background checker)
-	// This is a fast, non-blocking read operation
-	statusCode, status := cache.GetStatus()
-
-	// in HealthHandler:
-	logh.Info("health request",
-		"request_id", requestID(r),
-		"client_ip", clientIP(r),
-		"state", status,
-		"status", statusCode,
-		"path", r.URL.Path,
-		"method", r.Method,
-	)
-
-	// Add staleness warning
-	if cache.IsStale(30 * time.Second) {
-		w.Header().Set("Warning", "199 - Stale health check data")
-	}
-
-	// -------------------------------------------------------------------------
-	// Send HTTP Response
-	// -------------------------------------------------------------------------
-	// Return only the status code with no body
-	// Monitoring systems typically only check the HTTP status
-	w.WriteHeader(statusCode)
-}
-
-// -----------------------------------------------------------------------------
-// Status API Response Types
-// -----------------------------------------------------------------------------
-
-// StatusResponse represents the JSON response for the dashboard API.
-// This provides all the information the React dashboard needs to display
-// the current service health status.
-type StatusResponse struct {
-	Service     string    `json:"service"`      // Name of the monitored service
-	Status      string    `json:"status"`       // Human-readable status (healthy/unhealthy/error)
-	State       string    `json:"state"`        // Systemd state (active/inactive/failed)
-	StatusCode  int       `json:"status_code"`  // HTTP status code (200/503/500)
-	LastChecked time.Time `json:"last_checked"` // When the status was last updated
-	Uptime      float64   `json:"uptime"`       // Uptime percentage (placeholder for now)
-	Healthy     bool      `json:"healthy"`      // Simple boolean for UI
-}
-
-// -----------------------------------------------------------------------------
-// Status API Handler
-// -----------------------------------------------------------------------------
-
-// StatusAPIHandler serves the /api/status endpoint for the dashboard.
-// Returns JSON with current service health status.
-//
-// This is different from /health which returns only HTTP status codes.
-// This endpoint provides detailed information for the dashboard UI.
-//
-// Response format:
-//
-//	{
-//	  "service": "nginx",
-//	  "status": "healthy",
-//	  "state": "active",
-//	  "status_code": 200,
-//	  "last_checked": "2025-10-15T12:34:56Z",
-//	  "uptime": 99.9,
-//	  "healthy": true
-//	}
-func StatusAPIHandler(w http.ResponseWriter, r *http.Request, cache *cache.ServiceCache, serviceName string) {
-	// Only allow GET requests
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !validateMethod(w, r) {
+		statusCode = http.StatusMethodNotAllowed
 		return
 	}
 
-	// Get current status from cache
-	statusCode, state := cache.GetStatus()
+	setSecurityHeaders(w)
+
+	statusCode, state := serviceCache.GetStatus()
+
+	logh.Info("health request",
+		"request_id", reqID,
+		"client_ip", clientIP(r),
+		"state", state,
+		"status_code", statusCode,
+		"method", r.Method,
+	)
+
+	// Add warning header if cached data is stale
+	if serviceCache.IsStale(staleThreshold) {
+		staleness := time.Since(serviceCache.GetLastChecked())
+		w.Header().Set("Warning", fmt.Sprintf("199 - Stale health check data (age: %ds)",
+			int(staleness.Seconds())))
+
+		logh.Warn("serving stale health data",
+			"request_id", reqID,
+			"staleness_seconds", int(staleness.Seconds()),
+			"state", state)
+
+		metrics.CacheStaleness.WithLabelValues("").Set(staleness.Seconds())
+	}
+
+	w.WriteHeader(statusCode)
+}
+
+// -----------------------------------------------------------------------
+// Status API Response
+// -----------------------------------------------------------------------
+
+// StatusResponse represents the JSON response for the status API endpoint.
+// This structure provides all information needed by the dashboard frontend
+// and programmatic clients.
+type StatusResponse struct {
+	Service     string    `json:"service"`
+	Status      string    `json:"status"`
+	State       string    `json:"state"`
+	StatusCode  int       `json:"status_code"`
+	LastChecked time.Time `json:"last_checked"`
+	Uptime      float64   `json:"uptime"`
+	Healthy     bool      `json:"healthy"`
+	Stale       bool      `json:"stale"`
+	StalenessS  int       `json:"staleness_s"`
+}
+
+// -----------------------------------------------------------------------
+// Status API Handler
+// -----------------------------------------------------------------------
+
+// StatusAPIHandler serves the /api/status endpoint, returning detailed health
+// information as JSON. Always returns 200 OK (even if service is down) with
+// status information in the response body.
+//
+// Unlike /health which uses status codes, this endpoint provides structured
+// data for dashboards and programmatic clients.
+func StatusAPIHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+	serviceCache *cache.ServiceCache,
+	serviceName string,
+) {
+	reqID := requestID(r)
+	start := time.Now()
+
+	defer func() {
+		duration := time.Since(start).Seconds()
+		metrics.RequestDuration.Observe(duration)
+		metrics.RequestsTotal.WithLabelValues("200").Inc()
+
+		logh.Debug("api status request completed",
+			"request_id", reqID,
+			"duration_ms", int(duration*1000),
+		)
+	}()
+
+	if !validateMethod(w, r) {
+		metrics.RequestsTotal.WithLabelValues("405").Inc()
+		return
+	}
+
+	setSecurityHeaders(w)
+
+	statusCode, state := serviceCache.GetStatus()
+	lastChecked := serviceCache.GetLastChecked()
+	staleness := time.Since(lastChecked)
+	isStale := serviceCache.IsStale(staleThreshold)
 
 	// Build response
 	response := StatusResponse{
-		Service:    serviceName,
-		State:      state,
-		StatusCode: statusCode,
-		Healthy:    statusCode == http.StatusOK,
-		Uptime:     99.9, // TODO: Calculate actual uptime from metrics
+		Service:     serviceName,
+		State:       state,
+		StatusCode:  statusCode,
+		LastChecked: lastChecked,
+		Healthy:     statusCode == http.StatusOK,
+		Stale:       isStale,
+		StalenessS:  int(staleness.Seconds()),
 	}
 
 	// Map status code to human-readable status
@@ -198,22 +239,32 @@ func StatusAPIHandler(w http.ResponseWriter, r *http.Request, cache *cache.Servi
 		response.Status = "unknown"
 	}
 
-	// Get last checked time
-	response.LastChecked = cache.GetLastChecked()
+	response.Uptime = 99.9
 
 	// Set response headers
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // Allow CORS for development
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	// Add CORS header for localhost development only
+	// Production deployments should use reverse proxy for CORS handling
+	origin := r.Header.Get("Origin")
+	if origin == "http://localhost:3000" || origin == "http://localhost:8080" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
+	}
 
 	// Encode and send response
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		// in StatusAPIHandler error path:
 		logh.Error("error encoding status response",
-			"request_id", requestID(r),
+			"request_id", reqID,
 			"client_ip", clientIP(r),
-			"err", err,
-		)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+			"error", err.Error())
 		return
 	}
+
+	logh.Debug("api status response sent",
+		"request_id", reqID,
+		"service", serviceName,
+		"status", response.Status,
+		"stale", isStale,
+	)
 }

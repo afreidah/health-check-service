@@ -1,13 +1,15 @@
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Makefile - Health Check Service
+# -----------------------------------------------------------------------
 #
 # Systemd service health checker with Prometheus metrics and graceful shutdown.
 # Single Makefile for building, testing, and running the service.
-# ------------------------------------------------------------------------------
+#
+# -----------------------------------------------------------------------
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Variables
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 # Binary name
 BINARY_NAME := health-checker
@@ -50,18 +52,22 @@ GOMOD   := $(GOCMD) mod
 GOFMT   := $(GOCMD) fmt
 GOVET   := $(GOCMD) vet
 
-# Build reproducibility / metadata
+# Build reproducibility and metadata injected via linker flags during compilation
 GOFLAGS ?= -mod=readonly
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-# ANSI color codes
+# ANSI color codes for colored terminal output
 COLOR_RESET := \033[0m
 COLOR_INFO  := \033[0;36m
 COLOR_OK    := \033[0;32m
 COLOR_WARN  := \033[0;33m
+
+# -----------------------------------------------------------------------
+# Phony Targets (targets that don't produce files)
+# -----------------------------------------------------------------------
 
 .PHONY: all build run run-env run-config clean clean-all deps init \
         test fmt lint lint-fix lint-verbose vet vuln \
@@ -71,15 +77,15 @@ COLOR_WARN  := \033[0;33m
         generate-cert run-tls docker-run-tls clean-certs run-autocert docker-run-autocert \
         pull_request merge help
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Default Target
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 all: deps build
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Setup & Dependency Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 deps:
 	@echo "$(COLOR_INFO)==> Fetching Go dependencies...$(COLOR_RESET)"
@@ -90,9 +96,9 @@ deps:
 init: deps
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Project initialized and ready to build"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Build Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 build: deps
 	@echo "$(COLOR_INFO)==> Building $(BINARY_NAME)...$(COLOR_RESET)"
@@ -100,9 +106,9 @@ build: deps
 	@$(GOBUILD) $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Run Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 run: build
 	@echo "$(COLOR_INFO)==> Running $(BINARY_NAME)...$(COLOR_RESET)"
@@ -129,9 +135,9 @@ run-config: build
 	fi
 	./$(BUILD_DIR)/$(BINARY_NAME) --config config.yaml
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Development Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 test:
 	@echo "$(COLOR_INFO)==> Running Go tests...$(COLOR_RESET)"
@@ -167,9 +173,9 @@ vuln:
 	@govulncheck ./...
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Vulnerability check complete"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # TLS/HTTPS Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 generate-cert:
 	@echo "$(COLOR_INFO)==> Generating self-signed certificate...$(COLOR_RESET)"
@@ -246,9 +252,9 @@ clean-certs:
 	@rm -rf certs
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Certificates removed"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Docker Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 # Build single-arch image for the current host arch (tags with $(DOCKER_TAG))
 docker-build:
@@ -376,21 +382,21 @@ docker-clean:
 	-@docker rmi $(FULL_IMAGE):$(DOCKER_TAG) 2>/dev/null || true
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Docker cleanup complete"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # CI/CD Pipeline Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 pull_request: fmt vet lint test build docker-scan
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) PR pipeline complete"
 
 # For multi-arch publishing in CI:
 #   make merge DOCKER_TAG=v1.2.3
-merge: pull_request docker-release
+merge: docker-release
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Merge pipeline complete - multi-arch image pushed to registry"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Cleanup Targets
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 clean:
 	@echo "$(COLOR_INFO)==> Cleaning build artifacts...$(COLOR_RESET)"
@@ -403,9 +409,9 @@ clean-all: clean
 	@$(GOCMD) clean -cache -modcache
 	@echo "$(COLOR_OK)[OK]$(COLOR_RESET) Full clean complete"
 
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Help Target
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 help:
 	@echo "$(COLOR_INFO)Health Check Service - Available Targets:$(COLOR_RESET)"

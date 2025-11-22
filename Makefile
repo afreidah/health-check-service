@@ -30,9 +30,8 @@ ARCH_AMD  := linux/amd64
 ARCH_ARM  := linux/arm64
 
 # Container registry (internal, insecure is already configured on hosts)
-REGISTRY_HOST ?= docker-mirror.service.consul
-REGISTRY_PORT ?= 5000
-REGISTRY ?= $(REGISTRY_HOST):$(REGISTRY_PORT)
+REGISTRY_HOST ?= registry.munchbox
+REGISTRY ?= $(REGISTRY_HOST)
 
 # Full image name with registry
 FULL_IMAGE := $(REGISTRY)/$(DOCKER_IMAGE)
